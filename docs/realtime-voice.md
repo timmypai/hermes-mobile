@@ -20,6 +20,8 @@ Talk protocol source: `3b8f88bc9b39e7916523964debdce504af4d4990`.
 | Tools | Talk `POST /tool` | Only `name` and `arguments`; ordered outputs and response barrier |
 | Work status/results | Talk `GET /runs` | Server `runId`, `kind`, `status`, `output`; no client task registry |
 | Completion announcement | Existing dashboard global run watcher | Watch only this call's `WORK_STARTED` receipts, announce once while idle |
+| Project context | Gateway `projects.list`, Kanban boards and orchestration settings | One additive system item per call; no session instruction or tool change |
+| Delegation | Talk `delegate_task` | Held by the app; posted or sent to Kanban triage only after an on-screen choice |
 
 Sources:
 - https://github.com/TheSmokeDev/hermes-talk/tree/3b8f88bc9b39e7916523964debdce504af4d4990
@@ -62,8 +64,42 @@ That requirement and its backend patch were explicitly withdrawn. See the
 remaining live-device checks. See [the patch guide](../patches/README.md) for
 reapplying only the Android customization after upstream upgrades.
 
+## Project context and handoff
+
+Talk is still global. When a call opens, the app reads the active profile's
+projects (`projects.list`), live Kanban boards bound through `projectId`, and
+`GET kanban/orchestration`. It sends one `conversation.item.create` system item
+after `session.created`. That item lists the projects, a focus project (the
+project of the chat that opened voice, if any) and the handoff rules. It does
+not replace Talk's session instructions or tools, and it never requests a
+response. Catalog failure narrows the confirmation card; it does not block voice.
+
+Every `delegate_task` call is held. The function output tells the model that
+nothing started. The confirmation card shows the proposed project, its folder,
+bound boards, the Orchestrator auto-decompose setting and the full brief. The
+model's `[project:<id>]` prefix is only a proposal. An untagged brief may
+pre-select the focus project, which the card labels as unconfirmed.
+
+| Operator choice | Effect |
+| --- | --- |
+| Send to Orchestrator | `POST kanban/tasks?board=…` with `triage: true`, title, brief and `project_id`; no assignee or workspace override |
+| Run now in Talk | The held `name` and `arguments` are posted once, unchanged, to Talk `/tool` |
+| Wrong project / Cancel | Nothing is posted; the model is told to re-identify the project or acknowledge |
+
+The handoff is removed before any effect, so a repeated tap cannot act twice.
+A held handoff expires after ten minutes; ending or reconnecting the call drops
+it. Kanban 4xx is reported as not created; other failures are uncertain and are
+not retried. Decisions reach the model as system items only when the
+conversation is idle. The UI shows observed tool state (running, waiting,
+accepted, created, declined, uncertain), not an inferred user intent.
+
+The tag cannot prove that the user confirmed the project in speech, and Talk's
+folder text and `resource_keys` do not route work. Kanban triage carries the
+project as structured board/task fields; whether workers honor the board's
+project directory is Hermes Kanban behavior, not verified by this app.
+
 ## Voice interface
 
 [Dots Focus design](realtime-voice-design.md) records the selected immersive UI,
-the first-party references and the limits of the design prototype. This is a
-presentation-only change, not a new tool, Bot route or Kanban integration.
+the first-party references and the limits of the design prototype. That redesign
+was presentation-only; Kanban handoff is the separate section above.

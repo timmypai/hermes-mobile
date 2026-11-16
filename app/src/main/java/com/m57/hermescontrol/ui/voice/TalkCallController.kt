@@ -3,14 +3,22 @@ package com.m57.hermescontrol.ui.voice
 import android.content.Context
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.DataScope
+import com.m57.hermescontrol.data.remote.NetworkError
+import com.m57.hermescontrol.data.remote.NetworkResult
+import com.m57.hermescontrol.data.repository.KanbanRepository
+import com.m57.hermescontrol.data.repository.KanbanRepositoryImpl
+import com.m57.hermescontrol.data.ws.ProjectsRepository
+import com.m57.hermescontrol.data.ws.ProjectsResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,14 +27,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Authentication identity only; Talk is independent of the current Bot and chat session. */
+/**
+ * Authentication identity plus an optional focus project (the project of the chat that opened voice).
+ * The focus is a suggestion for the model and the confirmation card; Talk stays unbound.
+ */
 data class TalkLaunch(
     val scope: DataScope,
+    val focusProjectId: String? = null,
 )
 
 data class TalkCallState(
@@ -38,12 +51,17 @@ data class TalkCallState(
     val error: String? = null,
     val jobs: List<JsonObject> = emptyList(),
     val receipt: String = "",
+    val handoffs: List<TalkHandoff> = emptyList(),
+    val tool: TalkToolActivity? = null,
 )
 
-/** Foreground audio only. The existing global Talk executor owns all durable work. */
+/** Foreground audio only. The existing global Talk executor and Kanban own all durable work. */
 class TalkCallController(
     context: Context,
     val launch: TalkLaunch,
+    private val projects: ProjectsRepository = ProjectsRepository(),
+    private val kanban: KanbanRepository = KanbanRepositoryImpl(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val appContext = context.applicationContext
     private val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -54,13 +72,16 @@ class TalkCallController(
     private var commands: Channel<suspend () -> Unit>? = null
     private var api: TalkGatewayApi? = null
     private var adapter: TalkRealtimeAdapter? = null
+    private var catalog = TalkProjectCatalog()
     private var epoch = 0L
     private var disposed = false
 
     fun start() {
         if (disposed || call?.isActive == true) return
         val current = ++epoch
-        mutableState.update { it.copy(phase = "connecting", error = null, muted = false, level = 0f) }
+        mutableState.update {
+            it.copy(phase = "connecting", error = null, muted = false, level = 0f, handoffs = emptyList(), tool = null)
+        }
         call =
             lifetime.launch {
                 val queue = Channel<suspend () -> Unit>(64)
@@ -75,6 +96,8 @@ class TalkCallController(
                             }
                         }
                     }
+                // Read-only app data, loaded while Talk mints the session. Failure only narrows the card.
+                val loading = async { loadCatalog() }
                 try {
                     val gateway = TalkGatewayApi(launch.scope)
                     api = gateway
@@ -132,8 +155,16 @@ class TalkCallController(
                             },
                             onState = { phase -> mutableState.update { it.copy(phase = phase) } },
                             onError = { message -> mutableState.update { it.copy(error = message) } },
+                            onTool = { activity -> mutableState.update { it.copy(tool = activity) } },
+                            onDelegation = { id, arguments ->
+                                val held = TalkHandoff.hold(id, arguments, catalog, clock())
+                                mutableState.update { it.copy(handoffs = it.handoffs + held) }
+                            },
                         )
                     adapter = realtime
+                    catalog = withTimeoutOrNull(CATALOG_WAIT_MS) { loading.await() } ?: TalkProjectCatalog()
+                    loading.cancel()
+                    realtime.setContext(catalog.instructions())
                     withTimeout(35_000) {
                         media.connect { sdp ->
                             negotiateRealtime(session.text("offerUrl"), session.text("clientSecret"), sdp)
@@ -142,7 +173,10 @@ class TalkCallController(
                     val refresh =
                         launch {
                             while (true) {
-                                queue.send { refreshRuns() }
+                                queue.send {
+                                    refreshRuns()
+                                    expireHandoffs()
+                                }
                                 delay(5_000)
                             }
                         }
@@ -203,7 +237,7 @@ class TalkCallController(
         ++epoch
         peer?.close()
         call?.cancel()
-        mutableState.update { it.copy(phase = "ended", level = 0f) }
+        mutableState.update { it.copy(phase = "ended", level = 0f, handoffs = emptyList()) }
     }
 
     fun dispose() {
@@ -243,6 +277,165 @@ class TalkCallController(
             refreshRuns()
             val current = currentRun(job)
             mutableState.update { it.copy(receipt = current.text("output")) }
+        }
+
+    /** Operator chose Kanban triage. The Orchestrator, not this app, decomposes and runs the work. */
+    fun handToKanban(
+        handoff: TalkHandoff,
+        board: String,
+    ) {
+        val held = take(handoff) ?: return
+        enqueue {
+            val project = held.project
+            val body = held.kanbanTask(board)
+            if (project == null || body == null) {
+                announce(TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE), CANCELLED_NOTICE)
+                throw TalkSetupException("Kanban handoff needs a project with a bound board; nothing was created")
+            }
+            when (val result = kanban.createTask(board, body)) {
+                is NetworkResult.Success -> {
+                    val id =
+                        result.data.task
+                            ?.id
+                            .orEmpty()
+                    val decompose =
+                        when (held.autoDecompose) {
+                            true -> "Orchestrator auto-decompose is on."
+                            false -> "Orchestrator auto-decompose is off; it stays in triage until decomposed."
+                            null -> "Whether Orchestrator auto-decompose is on is unknown."
+                        }
+                    mutableState.update { it.copy(receipt = "Kanban triage $id · $board · ${project.name}") }
+                    announce(
+                        TalkToolActivity(TalkToolStatus.KANBAN_CREATED, DELEGATE, id),
+                        "The operator confirmed on screen. Created Kanban triage task $id on board $board " +
+                            "for project ${project.name}. $decompose It is queued; it has not started or " +
+                            "completed. Tell the user briefly.",
+                    )
+                }
+
+                is NetworkResult.Failure -> {
+                    val rejected = (result.error as? NetworkError.Http)?.code in 400..499
+                    announce(
+                        TalkToolActivity(if (rejected) TalkToolStatus.DECLINED else TalkToolStatus.UNCERTAIN, DELEGATE),
+                        if (rejected) {
+                            "Kanban refused the triage task, so nothing was created. Tell the user and ask how to proceed."
+                        } else {
+                            "Creating the Kanban triage task has an uncertain outcome. It will not be retried. " +
+                                "Tell the user to check the board before asking again."
+                        },
+                    )
+                    throw TalkSetupException(
+                        if (rejected) "Kanban refused the triage task" else "Kanban outcome is uncertain; not retried",
+                    )
+                }
+            }
+        }
+    }
+
+    /** Operator chose an immediate Talk background run: the held arguments are posted once, unchanged. */
+    fun runInTalk(handoff: TalkHandoff) {
+        val held = take(handoff) ?: return
+        enqueue {
+            val output =
+                try {
+                    val reply =
+                        checkNotNull(api).post(
+                            "/tool",
+                            buildJsonObject {
+                                put("name", DELEGATE)
+                                put("arguments", held.arguments)
+                            },
+                        )
+                    reply.text("output").takeIf { reply["output"] != null && (reply["ok"] == null || reply.flag("ok")) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            if (output == null) {
+                announce(
+                    TalkToolActivity(TalkToolStatus.UNCERTAIN, DELEGATE),
+                    "The operator confirmed a Talk background run, but its outcome is uncertain. It will not be " +
+                        "retried. Do not claim that work started or completed.",
+                )
+                throw TalkSetupException("Talk run outcome is uncertain; not retried")
+            }
+            val accepted = WORK_STARTED.find(output)?.groupValues?.get(1)
+            announce(
+                TalkToolActivity(
+                    if (accepted != null) TalkToolStatus.TALK_ACCEPTED else TalkToolStatus.FINISHED,
+                    DELEGATE,
+                    accepted.orEmpty(),
+                ),
+                "The operator confirmed an immediate Talk background run on screen. Talk tool output: " +
+                    output.ifEmpty { "(no output)" },
+                watchOutput = output,
+            )
+        }
+    }
+
+    /** Nothing is posted. [wrongProject] asks the model to re-identify the project first. */
+    fun decline(
+        handoff: TalkHandoff,
+        wrongProject: Boolean,
+    ) {
+        val held = take(handoff) ?: return
+        enqueue {
+            announce(
+                TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE, held.callId),
+                if (wrongProject) WRONG_PROJECT_NOTICE else CANCELLED_NOTICE,
+            )
+        }
+    }
+
+    /** Removes the handoff before any effect, so a repeated tap can never act twice. */
+    private fun take(handoff: TalkHandoff): TalkHandoff? {
+        val held = state.value.handoffs.firstOrNull { it.callId == handoff.callId } ?: return null
+        mutableState.update { current ->
+            current.copy(handoffs = current.handoffs.filterNot { it.callId == held.callId })
+        }
+        if (clock() - held.heldAtMillis > HANDOFF_TTL_MS) {
+            enqueue { announce(TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE), EXPIRED_NOTICE) }
+            mutableState.update { it.copy(error = "This handoff expired; nothing was started") }
+            return null
+        }
+        return held
+    }
+
+    private suspend fun expireHandoffs() {
+        val now = clock()
+        val expired = state.value.handoffs.filter { now - it.heldAtMillis > HANDOFF_TTL_MS }
+        if (expired.isEmpty()) return
+        mutableState.update { current -> current.copy(handoffs = current.handoffs - expired.toSet()) }
+        expired.forEach { _ -> announce(TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE), EXPIRED_NOTICE) }
+    }
+
+    private suspend fun announce(
+        activity: TalkToolActivity,
+        notice: String,
+        watchOutput: String? = null,
+    ) {
+        mutableState.update { it.copy(tool = activity) }
+        adapter?.notify(notice, watchOutput)
+    }
+
+    private suspend fun loadCatalog(): TalkProjectCatalog =
+        try {
+            coroutineScope {
+                val listed = async { projects.list() }
+                val boards = async { kanban.getBoards() }
+                val orchestration = async { kanban.getOrchestration() }
+                TalkProjectCatalog.from(
+                    projects = (listed.await() as? ProjectsResult.Ok)?.value.orEmpty(),
+                    boards = (boards.await() as? NetworkResult.Success)?.data?.boards.orEmpty(),
+                    focusId = launch.focusProjectId,
+                    autoDecompose = (orchestration.await() as? NetworkResult.Success)?.data?.autoDecompose,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            TalkProjectCatalog()
         }
 
     private fun currentRun(job: JsonObject): JsonObject {
@@ -285,4 +478,18 @@ class TalkCallController(
             is java.io.IOException -> error.message ?: "Voice connection failed"
             else -> "Voice authorization or protocol validation failed; check Talk configuration and reconnect"
         }
+
+    private companion object {
+        const val DELEGATE = "delegate_task"
+        const val CATALOG_WAIT_MS = 4_000L
+        const val HANDOFF_TTL_MS = 600_000L
+        val WORK_STARTED = Regex("WORK_STARTED #(\\d+) kind=(\\w+)")
+        const val CANCELLED_NOTICE =
+            "The operator cancelled this handoff on screen. Nothing was started. Acknowledge briefly."
+        const val WRONG_PROJECT_NOTICE =
+            "The operator says the project for this handoff is wrong. Nothing was started. Ask which project, " +
+                "then call delegate_task again with a corrected [project:<id>] brief."
+        const val EXPIRED_NOTICE =
+            "A held handoff expired after ten minutes without confirmation. Nothing was started. Mention it briefly."
+    }
 }

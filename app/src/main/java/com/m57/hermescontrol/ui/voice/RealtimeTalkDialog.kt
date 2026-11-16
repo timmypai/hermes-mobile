@@ -171,6 +171,21 @@ fun RealtimeTalkDialog(
                 },
             )
         }
+        state.handoffs.firstOrNull()?.let { handoff ->
+            // No dismiss by back or outside tap: the operator must choose, and Cancel is always available.
+            Dialog(
+                onDismissRequest = {},
+                properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            ) {
+                TalkHandoffCard(
+                    handoff = handoff,
+                    onKanban = { board -> controller.handToKanban(handoff, board) },
+                    onTalk = { controller.runInTalk(handoff) },
+                    onWrongProject = { controller.decline(handoff, wrongProject = true) },
+                    onCancel = { controller.decline(handoff, wrongProject = false) },
+                )
+            }
+        }
     }
 }
 
@@ -215,6 +230,8 @@ internal fun RealtimeTalkContent(
                         assistantText = state.assistantText,
                         jobs = state.jobs,
                         receipt = state.receipt,
+                        tool = state.tool,
+                        waiting = state.handoffs.size,
                         phase = state.phase,
                         error = state.error,
                         permissionDenied = permissionDenied,
@@ -313,6 +330,7 @@ private fun TalkVoiceStage(
                 onPermission = onPermission,
                 onReconnect = onReconnect,
             )
+            TalkToolLine(state.tool, state.handoffs.size, Modifier.padding(top = 6.dp))
             TalkVoiceVisual(
                 phase = if (permissionDenied || backgroundEnded) "ended" else state.phase,
                 muted = state.muted || permissionDenied || backgroundEnded,
@@ -500,6 +518,8 @@ private fun TalkActivity(
     assistantText: String,
     jobs: List<JsonObject>,
     receipt: String,
+    tool: TalkToolActivity?,
+    waiting: Int,
     phase: String,
     error: String?,
     permissionDenied: Boolean,
@@ -521,6 +541,7 @@ private fun TalkActivity(
     ) {
         item {
             TalkNotice(phase, error, permissionDenied, backgroundEnded, onPermission, onReconnect)
+            TalkToolLine(tool, waiting, Modifier.fillMaxWidth().padding(top = 6.dp))
             if (canInterrupt) {
                 TextButton(onClick = onInterrupt, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text(stringResource(R.string.realtime_interrupt))
@@ -673,6 +694,8 @@ internal fun RealtimeTalkActivityPreview() {
                     assistantText = "The work is running.",
                     jobs = listOf(job),
                     receipt = "",
+                    tool = TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, "delegate_task", "42"),
+                    waiting = 0,
                     phase = "speaking",
                     error = null,
                     permissionDenied = false,

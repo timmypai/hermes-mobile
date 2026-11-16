@@ -110,3 +110,33 @@ host capability is an acceptable substitute.
   call, TalkBack behavior, audible interruption, tool execution or lifecycle.
   The installed APK hash and phone observations above belong to the earlier
   build, not this latest-main redesign.
+
+## 2026-11-16: project context and confirmed handoff
+
+- Added the project catalog system item and the held `delegate_task`
+  confirmation card described in [the integration contract](../realtime-voice.md#project-context-and-handoff).
+- `TalkProjectContextTest` (7), `TalkRealtimeAdapterTest` (19) and
+  `TalkProtocolTest` (6): 32 tests, 0 failures. They cover tag parsing, archived
+  project and board filtering, focus fallback, board-scoped triage bodies, held
+  delegation never posted, other tools still posted, one-time context and
+  idle-only app notices.
+- `ktlintCheck`, `checkColorLiterals`, `assembleDebug`,
+  `assembleDebugAndroidTest` and `compileReleaseKotlin` succeeded.
+- Rendered the handoff card (dark, zh-TW, two boards), the missing-project card
+  (light, 320dp, 1.5× text; actions reachable by scrolling) and the Activity
+  pane with the observed tool line.
+- Not yet verified live: whether `gpt-realtime-2.1` follows the project rules
+  from a system item, actual Kanban triage creation and auto-decompose on the
+  host, Talk run confirmation, and latency of a voice progress query through a
+  Kanban-capable Hermes agent. The controller decision paths have no unit test;
+  they need the device scenarios below.
+
+| Live scenario | Expected observation |
+| --- | --- |
+| General question | No card; no tool line or a finished read tool |
+| Requirement discussed, then handed off with a named project | Card shows that project and its board; triage task appears on the board |
+| Handoff with focus only | Card labels the project as pre-selected from chat |
+| Ambiguous project | Model asks; or the card shows no project and Kanban is disabled |
+| Non-project task, Run now in Talk | One Talk run; `/runs` shows it |
+| Cancel / Wrong project | No Kanban task and no Talk run |
+| Voice progress query via Hermes agent | Record time from question to spoken answer |

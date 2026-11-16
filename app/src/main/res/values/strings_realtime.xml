@@ -48,4 +48,28 @@
         <item quantity="one">%d work item running</item>
         <item quantity="other">%d work items running</item>
     </plurals>
+    <string name="realtime_handoff_title">Confirm handoff</string>
+    <string name="realtime_handoff_not_started">Nothing has started. Check the project and the task, then choose where it goes.</string>
+    <string name="realtime_handoff_project">Project</string>
+    <string name="realtime_handoff_no_project">Not related to a project</string>
+    <string name="realtime_handoff_unknown_project">Project \"%1$s\" is not in this profile\'s project list</string>
+    <string name="realtime_handoff_missing_project">No project identified</string>
+    <string name="realtime_handoff_from_focus">Pre-selected from the chat that opened voice. Not confirmed in the conversation.</string>
+    <string name="realtime_handoff_no_board">This project has no bound Kanban board, so it cannot go to the Orchestrator.</string>
+    <string name="realtime_handoff_board">Kanban board</string>
+    <string name="realtime_handoff_decompose_on">Orchestrator auto-decompose: on</string>
+    <string name="realtime_handoff_decompose_off">Orchestrator auto-decompose: off. The task stays in triage until it is decomposed.</string>
+    <string name="realtime_handoff_decompose_unknown">Orchestrator auto-decompose: unknown</string>
+    <string name="realtime_handoff_task">Task</string>
+    <string name="realtime_handoff_kanban">Send to Orchestrator (Kanban triage)</string>
+    <string name="realtime_handoff_talk">Run now in Talk background</string>
+    <string name="realtime_handoff_wrong_project">Wrong project</string>
+    <string name="realtime_handoff_cancel">Cancel</string>
+    <string name="realtime_tool_waiting">Handoff waiting for your confirmation</string>
+    <string name="realtime_tool_running">Running tool: %1$s</string>
+    <string name="realtime_tool_finished">Tool returned: %1$s</string>
+    <string name="realtime_tool_talk_accepted">Talk accepted run #%1$s</string>
+    <string name="realtime_tool_kanban_created">Kanban triage task created: %1$s</string>
+    <string name="realtime_tool_declined">Handoff not sent. Nothing was started.</string>
+    <string name="realtime_tool_uncertain">Outcome uncertain. It will not be retried.</string>
 </resources>

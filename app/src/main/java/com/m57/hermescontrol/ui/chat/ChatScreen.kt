@@ -1170,7 +1170,7 @@ fun ChatScreen(
                     ) {
                         talkLaunch =
                             com.m57.hermescontrol.ui.voice
-                                .TalkLaunch(activeScope)
+                                .TalkLaunch(activeScope, state.sessionProjectId ?: state.stagedProject?.id)
                     }
                 },
                 onMicHoldStart = mediaLaunchers.onMicHoldStart,

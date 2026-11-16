@@ -275,14 +275,97 @@ class TalkRealtimeAdapterTest {
             assertEquals(listOf("Realtime provider reported an error."), seam.errors)
         }
 
+    @Test
+    fun `held delegation is never posted and its output says nothing started`() =
+        runTest {
+            val seam = Seam(hold = true)
+            val brief = """{"task":"[project:p_mobile] Add handoff"}"""
+            seam.adapter.handle(created())
+            seam.adapter.handle(tool(arguments = brief))
+            seam.adapter.handle(done(call("call-1", arguments = brief)))
+
+            assertTrue(seam.posts.isEmpty())
+            assertEquals(listOf("call-1" to json(brief)), seam.held)
+            val output =
+                seam
+                    .outputs()
+                    .single()
+                    .obj("item")
+                    .text("output")
+            assertTrue(output.startsWith("Not started."))
+            assertEquals(TalkToolStatus.AWAITING_CONFIRMATION, seam.tools.single().status)
+            assertEquals(1, seam.creates().size)
+        }
+
+    @Test
+    fun `holding delegation still posts other tools and reports their observed outcome`() =
+        runTest {
+            val seam = Seam(output = "WORK_STARTED #7 kind=agent", hold = true)
+            seam.adapter.handle(created())
+            seam.adapter.handle(tool(name = "check_work"))
+            seam.adapter.handle(done(call("call-1", name = "check_work")))
+
+            assertEquals(
+                "check_work",
+                seam.posts
+                    .single()
+                    .second
+                    .text("name"),
+            )
+            assertTrue(seam.held.isEmpty())
+            assertEquals(
+                listOf(TalkToolStatus.RUNNING, TalkToolStatus.TALK_ACCEPTED),
+                seam.tools.map { it.status },
+            )
+            assertEquals("7", seam.tools.last().reference)
+        }
+
+    @Test
+    fun `project context is sent once as a system item without requesting a response`() =
+        runTest {
+            val seam = Seam()
+            seam.adapter.setContext("Projects: p_mobile")
+            seam.adapter.handle(event("session.created"))
+            seam.adapter.handle(event("session.created"))
+
+            val notice = seam.systemNotices().single()
+            assertEquals(
+                "Projects: p_mobile",
+                (notice.obj("item")["content"] as JsonArray).single().let { (it as JsonObject).text("text") },
+            )
+            assertTrue(seam.creates().isEmpty())
+        }
+
+    @Test
+    fun `app notice waits for an idle conversation and is sent once`() =
+        runTest {
+            val seam = Seam()
+            seam.adapter.handle(event("input_audio_buffer.speech_started"))
+            seam.adapter.notify("The operator cancelled this handoff on screen. Nothing was started.")
+            assertTrue(seam.sent.isEmpty())
+
+            seam.adapter.handle(event("input_audio_buffer.speech_stopped"))
+            seam.adapter.handle(created())
+            seam.adapter.handle(done())
+            assertEquals(1, seam.systemNotices().size)
+            assertEquals(1, seam.creates().size)
+
+            seam.adapter.handle(created("response-2"))
+            seam.adapter.handle(done(responseId = "response-2"))
+            assertEquals(1, seam.systemNotices().size)
+        }
+
     private class Seam(
         output: String = "server output",
         failTool: Boolean = false,
+        hold: Boolean = false,
     ) {
         val posts = mutableListOf<Pair<String, JsonObject>>()
         val sent = mutableListOf<JsonObject>()
         val errors = mutableListOf<String>()
         val transcripts = mutableListOf<Triple<String, String, Boolean>>()
+        val held = mutableListOf<Pair<String, JsonObject>>()
+        val tools = mutableListOf<TalkToolActivity>()
         val adapter =
             TalkRealtimeAdapter(
                 post = { path, body ->
@@ -297,6 +380,8 @@ class TalkRealtimeAdapterTest {
                 onTranscript = { role, text, final -> transcripts += Triple(role, text, final) },
                 onState = {},
                 onError = { errors += it },
+                onTool = { tools += it },
+                onDelegation = if (hold) { id, arguments -> held += id to arguments } else null,
             )
 
         suspend fun acceptRun() {
@@ -310,6 +395,8 @@ class TalkRealtimeAdapterTest {
         fun outputs() = sent.filter { it.obj("item").text("type") == "function_call_output" }
 
         fun notices() = sent.filter { it.obj("item").text("type") == "message" }
+
+        fun systemNotices() = notices().filter { it.obj("item").text("role") == "system" }
     }
 
     companion object {
@@ -322,12 +409,13 @@ class TalkRealtimeAdapterTest {
         private fun tool(
             id: String = "call-1",
             arguments: String = "{}",
+            name: String = "delegate_task",
         ) = JsonObject(
             mapOf(
                 "type" to JsonPrimitive("response.function_call_arguments.done"),
                 "response_id" to JsonPrimitive("response-1"),
                 "call_id" to JsonPrimitive(id),
-                "name" to JsonPrimitive("delegate_task"),
+                "name" to JsonPrimitive(name),
                 "arguments" to JsonPrimitive(arguments),
             ),
         )
@@ -335,12 +423,13 @@ class TalkRealtimeAdapterTest {
         private fun call(
             id: String,
             arguments: String = "{}",
+            name: String = "delegate_task",
         ) = JsonObject(
             mapOf(
                 "type" to JsonPrimitive("function_call"),
                 "id" to JsonPrimitive("item-$id"),
                 "call_id" to JsonPrimitive(id),
-                "name" to JsonPrimitive("delegate_task"),
+                "name" to JsonPrimitive(name),
                 "arguments" to JsonPrimitive(arguments),
             ),
         )

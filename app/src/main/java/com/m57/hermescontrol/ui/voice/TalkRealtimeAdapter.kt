@@ -13,7 +13,8 @@ import kotlinx.serialization.json.put
 /**
  * Global Talk provider-wire continuity, not a task runtime or a chat-session binding.
  * The owner serializes all entry points on one actor, including across suspension, and supplies /runs snapshots.
- * Server VAD owns ordinary responses. Only function outputs and server run results request continuations here.
+ * Server VAD owns ordinary responses. Only function outputs, server run results and app notices request
+ * continuations here. With [onDelegation], delegate_task is held for the operator instead of being posted.
  */
 internal class TalkRealtimeAdapter(
     private val post: suspend (String, JsonObject) -> JsonObject,
@@ -21,6 +22,8 @@ internal class TalkRealtimeAdapter(
     private val onTranscript: (role: String, text: String, final: Boolean) -> Unit,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
+    private val onTool: (TalkToolActivity) -> Unit = {},
+    private val onDelegation: ((callId: String, arguments: JsonObject) -> Unit)? = null,
 ) {
     private class Call(
         val responseId: String,
@@ -53,14 +56,44 @@ internal class TalkRealtimeAdapter(
     private val watches = linkedMapOf<Long, Watch>()
     private val announced = mutableSetOf<Long>()
     private var closed = false
+    private var context: String? = null
+    private val notices = ArrayDeque<String>()
     private var continuationPending = false
     private var playing = false
     private var speaking = false
     private var awaitingInput = false
 
+    /** Sent once as a system item when the provider session opens. It never requests a response. */
+    fun setContext(text: String) {
+        context = text
+    }
+
+    /** Queue an app-authored system message; it is spoken only when the conversation is idle. */
+    suspend fun notify(
+        text: String,
+        watchOutput: String? = null,
+    ) {
+        if (closed) return
+        watchOutput?.let(::watchForRun)
+        notices.addLast(text)
+        drainNotices()
+    }
+
     suspend fun handle(event: JsonObject) {
         if (closed) return
         when (event.text("type")) {
+            "session.created" -> {
+                context?.let { text ->
+                    context = null
+                    if (!send(
+                            systemMessage(text),
+                        )
+                    ) {
+                        onError("Project context could not be sent; handoffs stay confirmed on screen.")
+                    }
+                }
+            }
+
             "conversation.item.input_audio_transcription.completed" -> {
                 event.text("transcript")?.takeIf { it.isNotEmpty() }?.let { onTranscript("user", it, true) }
             }
@@ -166,6 +199,7 @@ internal class TalkRealtimeAdapter(
         responses.clear()
         calls.clear()
         active.clear()
+        notices.clear()
         continuationPending = false
     }
 
@@ -199,8 +233,14 @@ internal class TalkRealtimeAdapter(
             onError("Conflicting tool call ignored; no request was repeated.")
         } else if (name.isEmpty() || arguments == null) {
             call.output = "Tool request was not executed because its name or arguments were invalid."
+        } else if (name == DELEGATE_TASK && onDelegation != null) {
+            // Held, not posted: the operator decides on screen. Nothing has started yet.
+            call.output = HELD_OUTPUT
+            onTool(TalkToolActivity(TalkToolStatus.AWAITING_CONFIRMATION, name))
+            onDelegation.invoke(id, arguments)
         } else {
             onState("executing")
+            onTool(TalkToolActivity(TalkToolStatus.RUNNING, name))
             try {
                 val reply =
                     post(
@@ -214,9 +254,11 @@ internal class TalkRealtimeAdapter(
                 val output = reply.text("output")
                 if ((reply["ok"] as? JsonPrimitive)?.booleanOrNull == false || output == null) {
                     call.output = UNCERTAIN_OUTPUT
+                    onTool(TalkToolActivity(TalkToolStatus.UNCERTAIN, name))
                     onError("Tool outcome is uncertain; this call will not be retried.")
                 } else {
                     call.output = output.ifEmpty { "(no output)" }
+                    onTool(toolActivity(name, output))
                     watchForRun(output)
                 }
             } catch (cancelled: CancellationException) {
@@ -224,6 +266,7 @@ internal class TalkRealtimeAdapter(
                 throw cancelled
             } catch (_: Exception) {
                 call.output = UNCERTAIN_OUTPUT
+                onTool(TalkToolActivity(TalkToolStatus.UNCERTAIN, name))
                 onError("Tool outcome is uncertain; this call will not be retried.")
             }
         }
@@ -333,6 +376,15 @@ internal class TalkRealtimeAdapter(
         ) {
             return
         }
+        notices.removeFirstOrNull()?.let { text ->
+            // Removed before sending: an uncertain provider delivery is reported, never repeated.
+            if (send(systemMessage(text))) {
+                createResponse()
+            } else {
+                onError("App notice delivery failed; check the on-screen result.")
+            }
+            return
+        }
         val entry = watches.entries.firstOrNull { it.value.terminal != null } ?: return
         val id = entry.key
         val watch = entry.value
@@ -345,36 +397,46 @@ internal class TalkRealtimeAdapter(
             "Work run #$id (${run.text("kind") ?: watch.kind}) finished with " +
                 "status '${run.text("status")}'. Result: $result\n\n" +
                 "Summarize this aloud in one to three spoken sentences."
-        val accepted =
-            send(
-                buildJsonObject {
-                    put("type", "conversation.item.create")
-                    put(
-                        "item",
-                        buildJsonObject {
-                            put("type", "message")
-                            put("role", "user")
-                            put(
-                                "content",
-                                JsonArray(
-                                    listOf(
-                                        buildJsonObject {
-                                            put("type", "input_text")
-                                            put("text", text)
-                                        },
-                                    ),
-                                ),
-                            )
-                        },
-                    )
-                },
-            )
-        if (!accepted) {
+        if (!send(messageItem("user", text))) {
             onError("Work result delivery failed; the server still owns the work.")
             return
         }
         watchForRun(result)
         createResponse()
+    }
+
+    private fun toolActivity(
+        name: String,
+        output: String,
+    ): TalkToolActivity =
+        WORK_STARTED.find(output)?.let { TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, name, it.groupValues[1]) }
+            ?: TalkToolActivity(TalkToolStatus.FINISHED, name)
+
+    private fun systemMessage(text: String) = messageItem("system", text)
+
+    private fun messageItem(
+        role: String,
+        text: String,
+    ) = buildJsonObject {
+        put("type", "conversation.item.create")
+        put(
+            "item",
+            buildJsonObject {
+                put("type", "message")
+                put("role", role)
+                put(
+                    "content",
+                    JsonArray(
+                        listOf(
+                            buildJsonObject {
+                                put("type", "input_text")
+                                put("text", text)
+                            },
+                        ),
+                    ),
+                )
+            },
+        )
     }
 
     private fun createResponse() {
@@ -398,6 +460,10 @@ internal class TalkRealtimeAdapter(
     private fun JsonObject.obj(key: String) = this[key] as? JsonObject
 
     private companion object {
+        const val DELEGATE_TASK = "delegate_task"
+        const val HELD_OUTPUT =
+            "Not started. The app is holding this handoff for the operator to confirm on screen. Say it is waiting " +
+                "for confirmation. Do not say the work started; a later app message reports the decision."
         val WORK_STARTED = Regex("WORK_STARTED #(\\d+) kind=(\\w+)")
         val TERMINAL_STATUSES = setOf("done", "failed", "lost")
         const val AGENT_WATCH_MS = 2_700_000L
