@@ -60,7 +60,7 @@ data class TalkProjectCatalog(
                 if (focus == null) {
                     "Focus: none."
                 } else {
-                    "Focus: ${focus.id} (${focus.name}), chosen on screen by the operator before this call."
+                    "Focus: ${focus.id} (${focus.name}), the project of the chat the operator opened this call from."
                 },
             )
             appendLine("Rules:")
@@ -155,7 +155,7 @@ data class TalkHandoff(
     val task: String,
     val tag: ProjectTag,
     val project: TalkProject?,
-    /** True when the model wrote no tag and the card uses the project chosen before the call. */
+    /** True when the model wrote no tag and the card uses the chat's project. */
     val fromFocus: Boolean,
     val autoDecompose: Boolean?,
     val heldAtMillis: Long,

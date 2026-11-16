@@ -46,9 +46,10 @@ are disabled. Server errors are not copied verbatim into logs or UI.
 
 ## Lifecycle and work
 
-Calls are foreground-only. Mute changes the local microphone. Barge-in and Cancel
-voice response interrupt provider output only. End voice releases local media;
-it never calls a task cancellation endpoint. Stop Work is a distinct confirmed
+Calls are foreground-only. The microphone button mutes only the local microphone.
+Barge-in and Cancel voice response interrupt provider output only. Hang up releases
+local media and keeps the screen open; Back closes it. Neither ever calls a task
+cancellation endpoint. Stop Work is a distinct confirmed
 operation using Talk's existing `stop_work` tool after refreshing server runs.
 Spoken approvals use the existing `resolve_approval` tool; no second approval
 registry is introduced.
@@ -68,13 +69,13 @@ reapplying only the Android customization after upstream upgrades.
 
 Talk is still global. When the voice dialog opens, the app reads the active
 profile's projects (`projects.list`), live Kanban boards bound through
-`projectId`, and `GET kanban/orchestration`. A pre-call lobby lists the projects
-(the chat's project is pre-selected) plus "no specific project"; nothing
-connects until Start. After `session.created` the app sends one
-`conversation.item.create` system item with the projects, the chosen focus
-project and the handoff rules. It does not replace Talk's session instructions
-or tools, and it never requests a response. Catalog failure narrows the picker
-and the confirmation card; it does not block voice.
+`projectId`, and `GET kanban/orchestration`. There is no project picker: the
+focus project is the chat's project (`sessionProjectId`, else the staged
+project), and the call connects as soon as the dialog opens. After
+`session.created` the app sends one `conversation.item.create` system item with
+the projects, the focus project and the handoff rules. It does not replace
+Talk's session instructions or tools, and it never requests a response. Catalog
+failure narrows the confirmation card; it does not block voice.
 
 Every `delegate_task` call is held. The function output tells the model that
 nothing started. The confirmation card shows the proposed project, its folder,
@@ -103,10 +104,22 @@ project directory is Hermes Kanban behavior, not verified by this app.
 ## Voice interface
 
 [Dots Focus design](realtime-voice-design.md) records the original immersive UI
-and its references. The current call screen keeps that layout and adds: the
-chosen project in the top bar, the Hermes Agent mark above the dots, a phase
-icon instead of status text, and a Mute / Speaker / Activity / End dock.
-Speaker (default on) selects the built-in loudspeaker as the communication
-device, re-applied when playout starts; off returns to the earpiece or a headset.
+and its references. The current call screen keeps the voice-first stage:
+
+- Top bar: the chat's project, then Activity and a link indicator
+  (connected / connecting / not connected; tap to reconnect when not connected).
+- Centre: the official Hermes Agent logo (the `NousResearch/hermes-agent`
+  desktop icon, `drawable-nodpi/hermes_agent_logo.webp`), the dots, and a status
+  pill with an animated icon: idle, listening, thinking, running, replying, muted,
+  connecting, error or ended. "Thinking" comes from speech end, `response.created`
+  and continuation requests; "running" only from a tool call.
+- Bottom, in thumb reach: audio output (left), Call / Hang up (centre, red while
+  in a call, green when not connected), microphone (right).
+
+Audio output cycles Speaker (default) → Earpiece → Sound off. Speaker selects the
+built-in loudspeaker as the communication device, re-applied when playout starts;
+Earpiece returns to the earpiece or a connected headset; Sound off silences
+assistant playout only, never the microphone. When the system routes the call
+through a Bluetooth headset, the microphone button shows a Bluetooth icon.
 The dialog window keeps the screen on for the whole call. Leaving the
 foreground still ends voice.

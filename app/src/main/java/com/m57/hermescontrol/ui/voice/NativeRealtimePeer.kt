@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.sqrt
@@ -41,12 +42,15 @@ class NativeRealtimePeer(
     private val onEvent: (String) -> Unit,
     private val onState: (String) -> Unit,
     private val onLevel: (Float) -> Unit,
+    /** True while calls use a Bluetooth headset (input and output), as reported by the system route. */
+    private val onBluetooth: (Boolean) -> Unit = {},
 ) {
     private val applicationContext = context.applicationContext
     private val audioManager = applicationContext.getSystemService(AudioManager::class.java)
     private val closed = AtomicBoolean(false)
     private val microphoneMuted = AtomicBoolean(false)
-    private val speakerOn = AtomicBoolean(true)
+    private val output = AtomicReference(TalkOutput.SPEAKER)
+    private var routeListener: Any? = null
 
     @Volatile
     private var peerThread: Thread? = null
@@ -132,9 +136,9 @@ class NativeRealtimePeer(
         }
     }
 
-    /** Loudspeaker or earpiece. A connected headset still takes over when the speaker is off. */
-    fun speaker(enabled: Boolean) {
-        speakerOn.set(enabled)
+    /** Loudspeaker, earpiece (a connected headset takes over), or playout muted. Never affects the microphone. */
+    fun output(mode: TalkOutput) {
+        output.set(mode)
         dispatch { if (focusRequest != null) routeOutput() }
     }
 
@@ -197,6 +201,7 @@ class NativeRealtimePeer(
                     },
                 ).createAudioDeviceModule()
         audioDevice = module
+        module.setSpeakerMute(output.get() == TalkOutput.MUTED)
         val peerFactory =
             PeerConnectionFactory
                 .builder()
@@ -381,28 +386,50 @@ class NativeRealtimePeer(
         previousAudioMode = audioManager.mode
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         routeOutput()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val listener = AudioManager.OnCommunicationDeviceChangedListener { dispatch { reportRoute() } }
+            audioManager.addOnCommunicationDeviceChangedListener(executor, listener)
+            routeListener = listener
+        }
     }
 
     private fun routeOutput() {
-        val enabled = speakerOn.get()
+        val mode = output.get()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val speaker =
                 audioManager.availableCommunicationDevices.firstOrNull {
                     it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                 }
-            if (enabled && speaker != null) {
+            if (mode == TalkOutput.SPEAKER && speaker != null) {
                 audioManager.setCommunicationDevice(speaker)
             } else {
                 audioManager.clearCommunicationDevice()
             }
         } else {
             @Suppress("DEPRECATION")
-            audioManager.isSpeakerphoneOn = enabled
+            audioManager.isSpeakerphoneOn = mode == TalkOutput.SPEAKER
         }
+        audioDevice?.setSpeakerMute(mode == TalkOutput.MUTED)
+        reportRoute()
+    }
+
+    private fun reportRoute() {
+        val bluetooth =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.communicationDevice?.type in BLUETOOTH_TYPES
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn
+            }
+        onBluetooth(bluetooth)
     }
 
     private fun resetOutput() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (routeListener as? AudioManager.OnCommunicationDeviceChangedListener)?.let {
+                audioManager.removeOnCommunicationDeviceChangedListener(it)
+            }
+            routeListener = null
             audioManager.clearCommunicationDevice()
         } else {
             @Suppress("DEPRECATION")
@@ -484,6 +511,7 @@ class NativeRealtimePeer(
 
     private companion object {
         const val LEVEL_INTERVAL_MS = 100L
+        val BLUETOOTH_TYPES = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET)
         var initialized = false
 
         @Synchronized

@@ -113,7 +113,7 @@ internal class TalkRealtimeAdapter(
                 if (!response.done && !response.suppressed) active += id
                 continuationPending = false
                 awaitingInput = false
-                onState("executing")
+                onState("thinking")
             }
 
             "response.function_call_arguments.done" -> {
@@ -138,13 +138,13 @@ internal class TalkRealtimeAdapter(
                 speaking = true
                 awaitingInput = true
                 interrupt()
-                onState("listening")
+                onState("hearing")
             }
 
             "input_audio_buffer.speech_stopped" -> {
                 speaking = false
                 awaitingInput = true
-                onState("executing")
+                onState("thinking")
             }
 
             "output_audio_buffer.started" -> {
@@ -442,7 +442,7 @@ internal class TalkRealtimeAdapter(
     private fun createResponse() {
         if (send(message("response.create"))) {
             continuationPending = true
-            onState("executing")
+            onState("thinking")
         } else {
             onError("Realtime continuation could not be sent.")
         }

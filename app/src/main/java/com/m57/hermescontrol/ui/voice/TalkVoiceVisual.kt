@@ -37,7 +37,7 @@ internal fun TalkVoiceVisual(
     onInterrupt: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val listening = !muted && (phase == "listening" || phase == "connected")
+    val listening = !muted && (phase == "listening" || phase == "connected" || phase == "hearing")
     val microphoneLevel =
         if (listening && level.isFinite()) (sqrt(level.coerceIn(0f, 1f)) * 2.5f).coerceAtMost(1f) else 0f
     val input =
@@ -48,7 +48,7 @@ internal fun TalkVoiceVisual(
         )
     // Muting input does not stop the assistant's playback activity.
     val speaking = phase == "speaking"
-    val active = speaking || (!muted && (phase == "connecting" || phase == "executing"))
+    val active = speaking || (!muted && (phase == "connecting" || phase == "thinking" || phase == "executing"))
     // One collective breath represents state activity, never measured assistant audio.
     // Conditional composition removes the infinite transition completely when settled.
     val activity =

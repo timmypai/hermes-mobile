@@ -5,6 +5,15 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,7 +41,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Description
@@ -43,6 +54,8 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material.icons.filled.SignalCellularOff
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material.icons.filled.Sync
@@ -64,10 +77,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -80,6 +97,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -114,8 +132,6 @@ fun RealtimeTalkDialog(
     var permissionDenied by remember(launch) { mutableStateOf(false) }
     var backgroundEnded by remember(launch) { mutableStateOf(false) }
     var pendingStop by remember(launch) { mutableStateOf<JsonObject?>(null) }
-    // The lobby picks the project first; nothing connects until Start.
-    var inCall by remember(launch) { mutableStateOf(false) }
     val permission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             permissionDenied = !granted
@@ -141,7 +157,7 @@ fun RealtimeTalkDialog(
     DisposableEffect(controller, owner) {
         val observer =
             LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_STOP && inCall) {
+                if (event == Lifecycle.Event.ON_STOP) {
                     controller.end()
                     backgroundEnded = true
                 }
@@ -156,39 +172,29 @@ fun RealtimeTalkDialog(
         controller.end()
         onDismiss()
     }
+    // The call uses the chat's project; there is no picker. Connect as soon as the dialog opens.
+    LaunchedEffect(controller) { connect(false) }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         // The dialog has its own window: keep that window's screen on for the whole call.
         val view = LocalView.current
-        DisposableEffect(view, inCall) {
-            view.keepScreenOn = inCall
+        DisposableEffect(view) {
+            view.keepScreenOn = true
             onDispose { view.keepScreenOn = false }
         }
-        if (!inCall) {
-            TalkLobby(
-                projects = state.projects,
-                selected = state.focusProject,
-                onSelect = controller::select,
-                onStart = {
-                    inCall = true
-                    connect(false)
-                },
-                onClose = close,
-            )
-        } else {
-            RealtimeTalkContent(
-                state = state,
-                permissionDenied = permissionDenied,
-                backgroundEnded = backgroundEnded,
-                onClose = close,
-                onPermission = { connect(false) },
-                onReconnect = { connect(true) },
-                onMute = controller::mute,
-                onSpeaker = controller::speaker,
-                onInterrupt = controller::interrupt,
-                onStop = { pendingStop = it },
-                onResult = controller::showResult,
-            )
-        }
+        RealtimeTalkContent(
+            state = state,
+            permissionDenied = permissionDenied,
+            backgroundEnded = backgroundEnded,
+            onClose = close,
+            onPermission = { connect(false) },
+            onReconnect = { connect(true) },
+            onMute = controller::mute,
+            onOutput = controller::cycleOutput,
+            onHangUp = controller::end,
+            onInterrupt = controller::interrupt,
+            onStop = { pendingStop = it },
+            onResult = controller::showResult,
+        )
         pendingStop?.let { job ->
             AlertDialog(
                 onDismissRequest = { pendingStop = null },
@@ -240,7 +246,8 @@ internal fun RealtimeTalkContent(
     onPermission: () -> Unit,
     onReconnect: () -> Unit,
     onMute: () -> Unit,
-    onSpeaker: () -> Unit,
+    onOutput: () -> Unit,
+    onHangUp: () -> Unit,
     onInterrupt: () -> Unit,
     onStop: (JsonObject) -> Unit,
     onResult: (JsonObject) -> Unit,
@@ -249,10 +256,11 @@ internal fun RealtimeTalkContent(
     val canControl =
         !permissionDenied && !backgroundEnded &&
             when (state.phase) {
-                "listening", "speaking", "executing", "connected" -> true
+                "listening", "hearing", "thinking", "speaking", "executing", "connected" -> true
                 else -> false
             }
-    val canInterrupt = canControl && (state.phase == "speaking" || state.phase == "executing")
+    val canInterrupt = canControl && state.phase in setOf("speaking", "thinking", "executing")
+    val link = talkLink(state.phase, permissionDenied, backgroundEnded)
     BackHandler(enabled = activityVisible) { activityVisible = false }
     HermesScaffold(
         modifier = Modifier.fillMaxSize(),
@@ -261,6 +269,14 @@ internal fun RealtimeTalkContent(
         drawerGesturesEnabled = false,
         showConnectionBanner = false,
         pinTopBar = true,
+        actions = {
+            TalkTopActions(
+                link = link,
+                activityVisible = activityVisible,
+                onActivity = { activityVisible = !activityVisible },
+                onReconnect = onReconnect,
+            )
+        },
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(
@@ -275,13 +291,11 @@ internal fun RealtimeTalkContent(
                         receipt = state.receipt,
                         tool = state.tool,
                         waiting = state.handoffs.size,
-                        phase = state.phase,
                         error = state.error,
                         permissionDenied = permissionDenied,
                         backgroundEnded = backgroundEnded,
                         canInterrupt = canInterrupt,
                         onPermission = onPermission,
-                        onReconnect = onReconnect,
                         onInterrupt = onInterrupt,
                         onStop = onStop,
                         onResult = onResult,
@@ -294,21 +308,21 @@ internal fun RealtimeTalkContent(
                         backgroundEnded = backgroundEnded,
                         canInterrupt = canInterrupt,
                         onPermission = onPermission,
-                        onReconnect = onReconnect,
                         onInterrupt = onInterrupt,
                         onActivity = { activityVisible = true },
                         modifier = Modifier.weight(1f),
                     )
                 }
                 TalkControls(
+                    output = state.output,
                     muted = state.muted,
-                    speaker = state.speaker,
+                    bluetooth = state.bluetooth,
+                    inCall = link != TalkLink.OFFLINE,
                     canControl = canControl,
-                    activityVisible = activityVisible,
+                    onOutput = onOutput,
                     onMute = onMute,
-                    onSpeaker = onSpeaker,
-                    onClose = onClose,
-                    onActivity = { activityVisible = !activityVisible },
+                    onCall = onReconnect,
+                    onHangUp = onHangUp,
                 )
             }
         }
@@ -369,7 +383,6 @@ private fun TalkVoiceStage(
     backgroundEnded: Boolean,
     canInterrupt: Boolean,
     onPermission: () -> Unit,
-    onReconnect: () -> Unit,
     onInterrupt: () -> Unit,
     onActivity: () -> Unit,
     modifier: Modifier = Modifier,
@@ -389,12 +402,10 @@ private fun TalkVoiceStage(
             verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
         ) {
             TalkNotice(
-                phase = state.phase,
                 error = state.error,
                 permissionDenied = permissionDenied,
                 backgroundEnded = backgroundEnded,
                 onPermission = onPermission,
-                onReconnect = onReconnect,
             )
             TalkLogo(if (notice) 88.dp else 136.dp)
             TalkVoiceVisual(
@@ -406,7 +417,7 @@ private fun TalkVoiceStage(
                 onInterrupt = onInterrupt,
                 modifier = Modifier.fillMaxWidth().height(if (notice) 72.dp else 120.dp).testTag("voice_interrupt"),
             )
-            TalkPhaseBadge(state.phase, state.muted, permissionDenied, backgroundEnded)
+            TalkStatus(state.phase, state.muted, permissionDenied, backgroundEnded)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -439,55 +450,304 @@ private fun TalkVoiceStage(
     }
 }
 
-/** Phase as one icon; the spoken name is only for accessibility. */
+/** The official Hermes Agent mark (NousResearch/hermes-agent desktop icon), not the Mobile launcher icon. */
 @Composable
-private fun TalkPhaseBadge(
+internal fun TalkLogo(
+    size: Dp,
+    modifier: Modifier = Modifier,
+) {
+    Image(
+        painterResource(R.drawable.hermes_agent_logo),
+        contentDescription = null,
+        modifier =
+            modifier
+                .size(size)
+                .clip(CircleShape)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+    )
+}
+
+private enum class TalkMotion { STILL, PULSE, SPIN }
+
+private enum class TalkTone { NEUTRAL, ACTIVE, WARNING, ERROR }
+
+/** What the assistant is doing now, as an animated icon and a word. */
+@Composable
+private fun TalkStatus(
     phase: String,
     muted: Boolean,
     permissionDenied: Boolean,
     backgroundEnded: Boolean,
 ) {
-    val colors = MaterialTheme.colorScheme
-    val (icon, label) =
+    data class Look(
+        val icon: ImageVector,
+        val label: Int,
+        val motion: TalkMotion,
+        val tone: TalkTone,
+    )
+    val look =
         when {
-            permissionDenied -> Icons.Filled.MicOff to R.string.realtime_state_permission
-            backgroundEnded || phase == "ended" -> Icons.Filled.CallEnd to R.string.realtime_state_ended
-            phase == "error" -> Icons.Filled.ErrorOutline to R.string.realtime_state_error
-            phase == "speaking" -> Icons.AutoMirrored.Filled.VolumeUp to R.string.realtime_state_speaking
-            phase == "executing" -> Icons.Filled.Sync to R.string.realtime_state_working
-            muted -> Icons.Filled.MicOff to R.string.realtime_state_muted
-            phase == "listening" || phase == "connected" -> Icons.Filled.Mic to R.string.realtime_state_listening
-            phase == "idle" -> Icons.Filled.Refresh to R.string.realtime_state_ready
-            else -> Icons.Filled.Sync to R.string.realtime_state_connecting
+            permissionDenied -> {
+                Look(
+                    Icons.Filled.MicOff,
+                    R.string.realtime_state_permission,
+                    TalkMotion.STILL,
+                    TalkTone.WARNING,
+                )
+            }
+
+            backgroundEnded || phase == "ended" -> {
+                Look(
+                    Icons.Filled.CallEnd,
+                    R.string.realtime_state_ended,
+                    TalkMotion.STILL,
+                    TalkTone.NEUTRAL,
+                )
+            }
+
+            phase == "error" -> {
+                Look(
+                    Icons.Filled.ErrorOutline,
+                    R.string.realtime_state_error,
+                    TalkMotion.STILL,
+                    TalkTone.ERROR,
+                )
+            }
+
+            phase == "idle" -> {
+                Look(
+                    Icons.Filled.Refresh,
+                    R.string.realtime_state_ready,
+                    TalkMotion.STILL,
+                    TalkTone.NEUTRAL,
+                )
+            }
+
+            phase == "connecting" -> {
+                Look(
+                    Icons.Filled.Sync,
+                    R.string.realtime_state_connecting,
+                    TalkMotion.SPIN,
+                    TalkTone.ACTIVE,
+                )
+            }
+
+            phase == "speaking" -> {
+                Look(
+                    Icons.AutoMirrored.Filled.VolumeUp,
+                    R.string.realtime_state_speaking,
+                    TalkMotion.PULSE,
+                    TalkTone.ACTIVE,
+                )
+            }
+
+            phase == "executing" -> {
+                Look(
+                    Icons.Filled.Autorenew,
+                    R.string.realtime_state_working,
+                    TalkMotion.SPIN,
+                    TalkTone.ACTIVE,
+                )
+            }
+
+            phase == "thinking" -> {
+                Look(
+                    Icons.Filled.Psychology,
+                    R.string.realtime_state_thinking,
+                    TalkMotion.PULSE,
+                    TalkTone.ACTIVE,
+                )
+            }
+
+            muted -> {
+                Look(Icons.Filled.MicOff, R.string.realtime_state_muted, TalkMotion.STILL, TalkTone.WARNING)
+            }
+
+            phase == "hearing" -> {
+                Look(
+                    Icons.Filled.Mic,
+                    R.string.realtime_state_listening,
+                    TalkMotion.PULSE,
+                    TalkTone.ACTIVE,
+                )
+            }
+
+            else -> {
+                Look(Icons.Filled.Mic, R.string.realtime_state_idle, TalkMotion.STILL, TalkTone.NEUTRAL)
+            }
         }
-    val description = stringResource(label)
+    val colors = MaterialTheme.colorScheme
+    val status = LocalHermesStatusColors.current
+    val tint =
+        when (look.tone) {
+            TalkTone.ACTIVE -> colors.primary
+            TalkTone.WARNING -> status.warning
+            TalkTone.ERROR -> status.error
+            TalkTone.NEUTRAL -> colors.onSurfaceVariant
+        }
+    val label = stringResource(look.label)
     Surface(
         shape = CircleShape,
-        color = if (phase == "error") colors.errorContainer else colors.secondaryContainer,
-        contentColor = if (phase == "error") colors.onErrorContainer else colors.onSecondaryContainer,
+        color = colors.surfaceContainerHigh,
         modifier =
             Modifier
-                .size(48.dp)
+                .heightIn(min = 44.dp)
+                .animateContentSize()
                 .testTag("voice_phase")
                 .clearAndSetSemantics {
-                    contentDescription = description
+                    contentDescription = label
                     liveRegion = LiveRegionMode.Polite
                 },
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-        ) { Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp)) }
+        Row(
+            Modifier.padding(start = 14.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TalkMotionIcon(look.icon, look.motion, tint)
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.onSurface,
+                modifier = Modifier.padding(start = 10.dp),
+            )
+        }
     }
 }
 
+/** Infinite transitions exist only while moving, so a settled status costs no frames. */
+@Composable
+private fun TalkMotionIcon(
+    icon: ImageVector,
+    motion: TalkMotion,
+    tint: Color,
+) {
+    val layer =
+        when (motion) {
+            TalkMotion.STILL -> {
+                Modifier
+            }
+
+            TalkMotion.SPIN -> {
+                val turn by rememberInfiniteTransition(label = "talk_spin").animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(tween(SPIN_MS, easing = LinearEasing)),
+                    label = "talk_spin_angle",
+                )
+                Modifier.graphicsLayer { rotationZ = turn }
+            }
+
+            TalkMotion.PULSE -> {
+                val beat by rememberInfiniteTransition(label = "talk_pulse").animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(PULSE_MS), RepeatMode.Reverse),
+                    label = "talk_pulse_beat",
+                )
+                Modifier.graphicsLayer {
+                    val scale = 0.82f + 0.3f * beat
+                    scaleX = scale
+                    scaleY = scale
+                    alpha = 0.55f + 0.45f * beat
+                }
+            }
+        }
+    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp).then(layer))
+}
+
+internal enum class TalkLink { CONNECTED, CONNECTING, OFFLINE }
+
+internal fun talkLink(
+    phase: String,
+    permissionDenied: Boolean,
+    backgroundEnded: Boolean,
+): TalkLink =
+    when {
+        permissionDenied || backgroundEnded -> TalkLink.OFFLINE
+        phase == "connecting" -> TalkLink.CONNECTING
+        phase in setOf("connected", "listening", "hearing", "thinking", "speaking", "executing") -> TalkLink.CONNECTED
+        else -> TalkLink.OFFLINE
+    }
+
+/** Activity and the link indicator; the call controls stay in thumb reach at the bottom. */
+@Composable
+private fun TalkTopActions(
+    link: TalkLink,
+    activityVisible: Boolean,
+    onActivity: () -> Unit,
+    onReconnect: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    IconToggleButton(
+        checked = activityVisible,
+        onCheckedChange = { onActivity() },
+        modifier = Modifier.size(48.dp).testTag("voice_activity"),
+        colors =
+            IconButtonDefaults.iconToggleButtonColors(
+                contentColor = colors.onSurfaceVariant,
+                checkedContainerColor = colors.secondaryContainer,
+                checkedContentColor = colors.onSecondaryContainer,
+            ),
+    ) {
+        Icon(
+            if (activityVisible) Icons.Filled.GraphicEq else Icons.AutoMirrored.Filled.Notes,
+            contentDescription =
+                stringResource(if (activityVisible) R.string.realtime_voice_view else R.string.realtime_activity),
+        )
+    }
+    val status = LocalHermesStatusColors.current
+    val (icon, tint, label) =
+        when (link) {
+            TalkLink.CONNECTED -> {
+                Triple(
+                    Icons.Filled.SignalCellularAlt,
+                    status.success,
+                    R.string.realtime_link_connected,
+                )
+            }
+
+            TalkLink.CONNECTING -> {
+                Triple(
+                    Icons.Filled.SignalCellularAlt,
+                    status.warning,
+                    R.string.realtime_link_connecting,
+                )
+            }
+
+            TalkLink.OFFLINE -> {
+                Triple(Icons.Filled.SignalCellularOff, status.error, R.string.realtime_link_offline)
+            }
+        }
+    val description = stringResource(label)
+    Box(
+        Modifier
+            .size(48.dp)
+            .testTag("voice_link")
+            .then(
+                if (link == TalkLink.OFFLINE) {
+                    Modifier.clickable(role = Role.Button, onClick = onReconnect)
+                } else {
+                    Modifier
+                },
+            ).clearAndSetSemantics {
+                contentDescription = description
+                liveRegion = LiveRegionMode.Polite
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        TalkMotionIcon(icon, if (link == TalkLink.CONNECTING) TalkMotion.PULSE else TalkMotion.STILL, tint)
+    }
+}
+
+private const val SPIN_MS = 1_200
+private const val PULSE_MS = 650
+
 @Composable
 private fun TalkNotice(
-    phase: String,
     error: String?,
     permissionDenied: Boolean,
     backgroundEnded: Boolean,
     onPermission: () -> Unit,
-    onReconnect: () -> Unit,
 ) {
     val statusColors = LocalHermesStatusColors.current
     Column(
@@ -508,86 +768,121 @@ private fun TalkNotice(
         }
         if (backgroundEnded) Text(stringResource(R.string.realtime_background), textAlign = TextAlign.Center)
         error?.let { Text(it, color = statusColors.error, textAlign = TextAlign.Center) }
-        if (!permissionDenied && (backgroundEnded || phase == "idle" || phase == "error" || phase == "ended")) {
-            Button(onClick = onReconnect, modifier = Modifier.heightIn(min = 48.dp).testTag("voice_reconnect")) {
-                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text(stringResource(R.string.realtime_reconnect), Modifier.padding(start = 8.dp))
-            }
-        }
     }
 }
 
+/** Left: audio output (speaker, earpiece, muted). Centre: call or hang up. Right: microphone (Bluetooth when routed). */
 @Composable
 private fun TalkControls(
+    output: TalkOutput,
     muted: Boolean,
-    speaker: Boolean,
+    bluetooth: Boolean,
+    inCall: Boolean,
     canControl: Boolean,
-    activityVisible: Boolean,
+    onOutput: () -> Unit,
     onMute: () -> Unit,
-    onSpeaker: () -> Unit,
-    onClose: () -> Unit,
-    onActivity: () -> Unit,
+    onCall: () -> Unit,
+    onHangUp: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val toggleColors =
-        IconButtonDefaults.iconToggleButtonColors(
+    val status = LocalHermesStatusColors.current
+    val sideColors =
+        IconButtonDefaults.iconButtonColors(
             containerColor = colors.surfaceContainerHigh,
             contentColor = colors.onSurface,
-            checkedContainerColor = colors.primary,
-            checkedContentColor = colors.onPrimary,
         )
+    val (outputIcon, outputName) =
+        when (output) {
+            TalkOutput.SPEAKER -> Icons.AutoMirrored.Filled.VolumeUp to R.string.realtime_output_speaker
+            TalkOutput.EARPIECE -> Icons.Filled.PhoneInTalk to R.string.realtime_output_earpiece
+            TalkOutput.MUTED -> Icons.AutoMirrored.Filled.VolumeOff to R.string.realtime_output_muted
+        }
+    val outputLabel = stringResource(R.string.realtime_output, stringResource(outputName))
     val muteLabel = stringResource(if (muted) R.string.realtime_unmute else R.string.realtime_mute)
-    val micState = stringResource(if (muted) R.string.realtime_state_muted else R.string.realtime_mic_on)
-    val speakerLabel = stringResource(if (speaker) R.string.realtime_speaker_on else R.string.realtime_speaker_off)
-    val activityLabel =
-        stringResource(if (activityVisible) R.string.realtime_voice_view else R.string.realtime_activity)
+    val micState =
+        stringResource(
+            when {
+                muted -> R.string.realtime_state_muted
+                bluetooth -> R.string.realtime_mic_bluetooth
+                else -> R.string.realtime_mic_on
+            },
+        )
     Row(
-        Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 24.dp).testTag("voice_controls"),
+        Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 28.dp).testTag("voice_controls"),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(
+            onClick = onOutput,
+            modifier = Modifier.size(64.dp).testTag("voice_speaker"),
+            shape = CircleShape,
+            colors =
+                if (output == TalkOutput.MUTED) {
+                    IconButtonDefaults.iconButtonColors(
+                        containerColor = colors.inverseSurface,
+                        contentColor = colors.inverseOnSurface,
+                    )
+                } else {
+                    sideColors
+                },
+        ) {
+            Icon(outputIcon, contentDescription = outputLabel)
+        }
+        if (inCall) {
+            IconButton(
+                onClick = onHangUp,
+                modifier = Modifier.size(76.dp).testTag("voice_end"),
+                shape = CircleShape,
+                colors =
+                    IconButtonDefaults.iconButtonColors(
+                        containerColor = colors.error,
+                        contentColor = colors.onError,
+                    ),
+            ) {
+                Icon(
+                    Icons.Filled.CallEnd,
+                    contentDescription = stringResource(R.string.realtime_end),
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+        } else {
+            IconButton(
+                onClick = onCall,
+                modifier = Modifier.size(76.dp).testTag("voice_call"),
+                shape = CircleShape,
+                colors =
+                    IconButtonDefaults.iconButtonColors(
+                        containerColor = status.success,
+                        contentColor = status.onSuccess,
+                    ),
+            ) {
+                Icon(
+                    Icons.Filled.Call,
+                    contentDescription = stringResource(R.string.realtime_call),
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+        }
         IconToggleButton(
             checked = muted,
             onCheckedChange = { onMute() },
             enabled = canControl,
             modifier = Modifier.size(64.dp).testTag("voice_mute").semantics { stateDescription = micState },
-            colors = toggleColors,
-        ) {
-            Icon(if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, contentDescription = muteLabel)
-        }
-        IconToggleButton(
-            checked = speaker,
-            onCheckedChange = { onSpeaker() },
-            modifier = Modifier.size(64.dp).testTag("voice_speaker"),
-            colors = toggleColors,
-        ) {
-            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = speakerLabel)
-        }
-        IconToggleButton(
-            checked = activityVisible,
-            onCheckedChange = { onActivity() },
-            modifier = Modifier.size(64.dp).testTag("voice_activity"),
-            colors = toggleColors,
-        ) {
-            Icon(
-                if (activityVisible) Icons.Filled.GraphicEq else Icons.AutoMirrored.Filled.Notes,
-                contentDescription = activityLabel,
-            )
-        }
-        IconButton(
-            onClick = onClose,
-            modifier = Modifier.size(72.dp).testTag("voice_end"),
-            shape = CircleShape,
             colors =
-                IconButtonDefaults.iconButtonColors(
-                    containerColor = colors.error,
-                    contentColor = colors.onError,
+                IconButtonDefaults.iconToggleButtonColors(
+                    containerColor = colors.surfaceContainerHigh,
+                    contentColor = colors.onSurface,
+                    checkedContainerColor = colors.inverseSurface,
+                    checkedContentColor = colors.inverseOnSurface,
                 ),
         ) {
             Icon(
-                Icons.Filled.CallEnd,
-                contentDescription = stringResource(R.string.realtime_end),
-                modifier = Modifier.size(30.dp),
+                when {
+                    muted -> Icons.Filled.MicOff
+                    bluetooth -> Icons.Filled.BluetoothAudio
+                    else -> Icons.Filled.Mic
+                },
+                contentDescription = muteLabel,
             )
         }
     }
@@ -637,13 +932,11 @@ private fun TalkActivity(
     receipt: String,
     tool: TalkToolActivity?,
     waiting: Int,
-    phase: String,
     error: String?,
     permissionDenied: Boolean,
     backgroundEnded: Boolean,
     canInterrupt: Boolean,
     onPermission: () -> Unit,
-    onReconnect: () -> Unit,
     onInterrupt: () -> Unit,
     onStop: (JsonObject) -> Unit,
     onResult: (JsonObject) -> Unit,
@@ -657,7 +950,7 @@ private fun TalkActivity(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            TalkNotice(phase, error, permissionDenied, backgroundEnded, onPermission, onReconnect)
+            TalkNotice(error, permissionDenied, backgroundEnded, onPermission)
             FlowRow(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -842,12 +1135,12 @@ private fun TalkJob(
 
 private val PreviewProject = TalkProject(id = "p_pilot", name = "Agent Team Local Pilot", primaryPath = "/srv/pilot")
 
-@Preview(showBackground = true, widthDp = 360, heightDp = 800)
+@Preview(showBackground = true, widthDp = 360, heightDp = 800, locale = "zh-rTW")
 @Composable
 internal fun RealtimeTalkPreview() {
     TalkScenePreview(
         TalkCallState(
-            phase = "listening",
+            phase = "thinking",
             level = 0.35f,
             focusProject = PreviewProject,
             assistantText = "好，要我把這個需求交給 Orchestrator 嗎？",
@@ -860,7 +1153,10 @@ internal fun RealtimeTalkPreview() {
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 internal fun RealtimeTalkMutedPreview() {
-    TalkScenePreview(TalkCallState(phase = "listening", muted = true, speaker = false), ThemePreference.LIGHT)
+    TalkScenePreview(
+        TalkCallState(phase = "listening", muted = true, output = TalkOutput.EARPIECE),
+        ThemePreference.LIGHT,
+    )
 }
 
 @Preview(showBackground = true, widthDp = 320, heightDp = 640, fontScale = 1.5f)
@@ -886,7 +1182,8 @@ private fun TalkScenePreview(
             onPermission = {},
             onReconnect = {},
             onMute = {},
-            onSpeaker = {},
+            onOutput = {},
+            onHangUp = {},
             onInterrupt = {},
             onStop = {},
             onResult = {},
@@ -917,19 +1214,27 @@ internal fun RealtimeTalkActivityPreview() {
                     receipt = "",
                     tool = TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, "delegate_task", "5"),
                     waiting = 0,
-                    phase = "speaking",
                     error = null,
                     permissionDenied = false,
                     backgroundEnded = false,
                     canInterrupt = true,
                     onPermission = {},
-                    onReconnect = {},
                     onInterrupt = {},
                     onStop = {},
                     onResult = {},
                     modifier = Modifier.weight(1f),
                 )
-                TalkControls(false, true, true, true, {}, {}, {}, {})
+                TalkControls(
+                    output = TalkOutput.SPEAKER,
+                    muted = false,
+                    bluetooth = true,
+                    inCall = true,
+                    canControl = true,
+                    onOutput = {},
+                    onMute = {},
+                    onCall = {},
+                    onHangUp = {},
+                )
             }
         }
     }

@@ -81,7 +81,8 @@ class RealtimeVoiceUiTest {
                                     onPermission = {},
                                     onReconnect = {},
                                     onMute = {},
-                                    onSpeaker = {},
+                                    onOutput = {},
+                                    onHangUp = {},
                                     onInterrupt = {},
                                     onStop = {},
                                     onResult = {},
@@ -102,7 +103,8 @@ class RealtimeVoiceUiTest {
             .performClick()
         compose.onNodeWithTag("voice_project", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("voice_speaker").assertIsDisplayed()
-        compose.onNodeWithTag("voice_end").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("voice_end").assertIsDisplayed()
+        compose.onNodeWithTag("back_button").performClick()
         compose.onNodeWithTag("chat_input").assertTextEquals("keep this draft")
         compose.onNodeWithTag("send_button").assertIsNotEnabled()
         compose.runOnIdle { assertEquals(0, dictationTaps) }
@@ -122,6 +124,7 @@ class RealtimeVoiceUiTest {
                 ).jsonObject
         var interrupted = 0
         var ended = 0
+        var hungUp = 0
         var resultRun = ""
         var stopped = false
         compose.setContent {
@@ -134,7 +137,8 @@ class RealtimeVoiceUiTest {
                 onPermission = {},
                 onReconnect = {},
                 onMute = { muted = !muted },
-                onSpeaker = {},
+                onOutput = {},
+                onHangUp = { hungUp++ },
                 onInterrupt = { interrupted++ },
                 onStop = {
                     assertEquals(job, it)
@@ -143,7 +147,7 @@ class RealtimeVoiceUiTest {
                 onResult = { resultRun = it["runId"].toString() },
             )
         }
-        compose.onNodeWithTag("voice_reconnect").assertDoesNotExist()
+        compose.onNodeWithTag("voice_call").assertDoesNotExist()
         compose.onNodeWithTag("voice_mute").performClick().assertIsOn()
         compose.onNodeWithTag("voice_interrupt").performClick()
         compose.onNodeWithTag("voice_activity").performClick()
@@ -168,11 +172,17 @@ class RealtimeVoiceUiTest {
         compose.onNodeWithText(stopLabel).performClick()
         compose.runOnIdle { assertEquals(true, stopped) }
         compose.onNodeWithTag("voice_end").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(1, hungUp)
+            assertEquals(0, ended)
+            assertEquals(true, stopped)
+        }
+        compose.onNodeWithTag("back_button").performClick()
         compose.runOnIdle { assertEquals(1, ended) }
     }
 
     @Test
-    fun recoveryAndEndRemainReachableAtNarrowWidthWithLargeText() {
+    fun callAndCloseRemainReachableAtNarrowWidthWithLargeText() {
         var reconnects = 0
         var ended = false
         compose.setContent {
@@ -191,7 +201,8 @@ class RealtimeVoiceUiTest {
                         onPermission = {},
                         onReconnect = { reconnects++ },
                         onMute = {},
-                        onSpeaker = {},
+                        onOutput = {},
+                        onHangUp = {},
                         onInterrupt = {},
                         onStop = {},
                         onResult = {},
@@ -200,10 +211,14 @@ class RealtimeVoiceUiTest {
             }
         }
         compose.onNodeWithTag("voice_mute").assertIsNotEnabled()
-        compose.onNodeWithTag("voice_end").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
-        compose.onNodeWithTag("voice_reconnect").performScrollTo().performClick()
+        compose.onNodeWithTag("voice_end").assertDoesNotExist()
+        compose
+            .onNodeWithTag("voice_call")
+            .assertIsDisplayed()
+            .assertHeightIsAtLeast(48.dp)
+            .performClick()
         compose.runOnIdle { assertEquals(1, reconnects) }
-        compose.onNodeWithTag("voice_end").performClick()
+        compose.onNodeWithTag("back_button").performClick()
         compose.runOnIdle { assertEquals(true, ended) }
     }
 }
