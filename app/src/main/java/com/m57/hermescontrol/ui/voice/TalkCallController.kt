@@ -45,6 +45,12 @@ data class TalkLaunch(
 data class TalkCallState(
     val phase: String = "idle",
     val muted: Boolean = false,
+    /** Loudspeaker (default) versus earpiece. Kept across reconnects within one dialog. */
+    val speaker: Boolean = true,
+    /** The project chosen before the call (initially the chat's). Null means no project. */
+    val focusProject: TalkProject? = null,
+    /** Active projects for the pre-call picker; null while loading. */
+    val projects: List<TalkProject>? = null,
     val level: Float = 0f,
     val userText: String = "",
     val assistantText: String = "",
@@ -73,8 +79,23 @@ class TalkCallController(
     private var api: TalkGatewayApi? = null
     private var adapter: TalkRealtimeAdapter? = null
     private var catalog = TalkProjectCatalog()
+
+    // Read-only app data, loaded when the dialog opens. Failure only narrows the picker and the card.
+    private val catalogLoad =
+        lifetime.async {
+            loadCatalog().also { loaded ->
+                mutableState.update {
+                    it.copy(projects = loaded.projects, focusProject = it.focusProject ?: loaded.find(loaded.focusId))
+                }
+            }
+        }
     private var epoch = 0L
     private var disposed = false
+
+    /** Applies to the next call start; an active call keeps the project it started with. */
+    fun select(project: TalkProject?) {
+        mutableState.update { it.copy(focusProject = project) }
+    }
 
     fun start() {
         if (disposed || call?.isActive == true) return
@@ -96,8 +117,6 @@ class TalkCallController(
                             }
                         }
                     }
-                // Read-only app data, loaded while Talk mints the session. Failure only narrows the card.
-                val loading = async { loadCatalog() }
                 try {
                     val gateway = TalkGatewayApi(launch.scope)
                     api = gateway
@@ -139,6 +158,7 @@ class TalkCallController(
                             },
                         )
                     voice = media
+                    media.speaker(state.value.speaker)
                     peer = media
                     realtime =
                         TalkRealtimeAdapter(
@@ -162,8 +182,14 @@ class TalkCallController(
                             },
                         )
                     adapter = realtime
-                    catalog = withTimeoutOrNull(CATALOG_WAIT_MS) { loading.await() } ?: TalkProjectCatalog()
-                    loading.cancel()
+                    val loaded = withTimeoutOrNull(CATALOG_WAIT_MS) { catalogLoad.await() } ?: TalkProjectCatalog()
+                    catalog =
+                        loaded.copy(
+                            focusId =
+                                state.value.focusProject
+                                    ?.id
+                                    ?.takeIf { id -> loaded.find(id) != null },
+                        )
                     realtime.setContext(catalog.instructions())
                     withTimeout(35_000) {
                         media.connect { sdp ->
@@ -215,6 +241,12 @@ class TalkCallController(
         val value = !state.value.muted
         peer?.mute(value)
         mutableState.update { it.copy(muted = value, level = if (value) 0f else it.level) }
+    }
+
+    fun speaker() {
+        val value = !state.value.speaker
+        peer?.speaker(value)
+        mutableState.update { it.copy(speaker = value) }
     }
 
     fun interrupt() =
@@ -444,8 +476,16 @@ class TalkCallController(
             ?: throw TalkSetupException("This work is no longer available on the server")
     }
 
+    /** Polling only: a failed snapshot keeps the last one; it must not end the voice call. */
     private suspend fun refreshRuns() {
-        val runs = checkNotNull(api).get("/runs").rows("runs")
+        val runs =
+            try {
+                checkNotNull(api).get("/runs").rows("runs")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return
+            }
         mutableState.update { it.copy(jobs = runs) }
         adapter?.updateRuns(runs)
     }

@@ -5,10 +5,13 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,18 +29,31 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.StopCircle
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -48,12 +64,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -94,6 +114,8 @@ fun RealtimeTalkDialog(
     var permissionDenied by remember(launch) { mutableStateOf(false) }
     var backgroundEnded by remember(launch) { mutableStateOf(false) }
     var pendingStop by remember(launch) { mutableStateOf<JsonObject?>(null) }
+    // The lobby picks the project first; nothing connects until Start.
+    var inCall by remember(launch) { mutableStateOf(false) }
     val permission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             permissionDenied = !granted
@@ -116,11 +138,10 @@ fun RealtimeTalkDialog(
             if (reconnect) controller.reconnect() else controller.start()
         }
     }
-    LaunchedEffect(controller) { connect(false) }
     DisposableEffect(controller, owner) {
         val observer =
             LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_STOP) {
+                if (event == Lifecycle.Event.ON_STOP && inCall) {
                     controller.end()
                     backgroundEnded = true
                 }
@@ -136,21 +157,42 @@ fun RealtimeTalkDialog(
         onDismiss()
     }
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        RealtimeTalkContent(
-            state = state,
-            permissionDenied = permissionDenied,
-            backgroundEnded = backgroundEnded,
-            onClose = close,
-            onPermission = { connect(false) },
-            onReconnect = { connect(true) },
-            onMute = controller::mute,
-            onInterrupt = controller::interrupt,
-            onStop = { pendingStop = it },
-            onResult = controller::showResult,
-        )
+        // The dialog has its own window: keep that window's screen on for the whole call.
+        val view = LocalView.current
+        DisposableEffect(view, inCall) {
+            view.keepScreenOn = inCall
+            onDispose { view.keepScreenOn = false }
+        }
+        if (!inCall) {
+            TalkLobby(
+                projects = state.projects,
+                selected = state.focusProject,
+                onSelect = controller::select,
+                onStart = {
+                    inCall = true
+                    connect(false)
+                },
+                onClose = close,
+            )
+        } else {
+            RealtimeTalkContent(
+                state = state,
+                permissionDenied = permissionDenied,
+                backgroundEnded = backgroundEnded,
+                onClose = close,
+                onPermission = { connect(false) },
+                onReconnect = { connect(true) },
+                onMute = controller::mute,
+                onSpeaker = controller::speaker,
+                onInterrupt = controller::interrupt,
+                onStop = { pendingStop = it },
+                onResult = controller::showResult,
+            )
+        }
         pendingStop?.let { job ->
             AlertDialog(
                 onDismissRequest = { pendingStop = null },
+                icon = { Icon(Icons.Filled.StopCircle, contentDescription = null) },
                 title = { Text(stringResource(R.string.realtime_stop_work)) },
                 text = { Text(stringResource(R.string.realtime_stop_confirm)) },
                 confirmButton = {
@@ -198,6 +240,7 @@ internal fun RealtimeTalkContent(
     onPermission: () -> Unit,
     onReconnect: () -> Unit,
     onMute: () -> Unit,
+    onSpeaker: () -> Unit,
     onInterrupt: () -> Unit,
     onStop: (JsonObject) -> Unit,
     onResult: (JsonObject) -> Unit,
@@ -213,7 +256,7 @@ internal fun RealtimeTalkContent(
     BackHandler(enabled = activityVisible) { activityVisible = false }
     HermesScaffold(
         modifier = Modifier.fillMaxSize(),
-        title = { Text(stringResource(R.string.realtime_title)) },
+        title = { TalkProjectTitle(state.focusProject, connecting = state.phase == "connecting") },
         navigationIcon = NavIcon.Back { if (activityVisible) activityVisible = false else onClose() },
         drawerGesturesEnabled = false,
         showConnectionBanner = false,
@@ -259,9 +302,11 @@ internal fun RealtimeTalkContent(
                 }
                 TalkControls(
                     muted = state.muted,
+                    speaker = state.speaker,
                     canControl = canControl,
                     activityVisible = activityVisible,
                     onMute = onMute,
+                    onSpeaker = onSpeaker,
                     onClose = onClose,
                     onActivity = { activityVisible = !activityVisible },
                 )
@@ -270,6 +315,53 @@ internal fun RealtimeTalkContent(
     }
 }
 
+/** The chat's project, so the operator always sees which project a handoff will default to. */
+@Composable
+private fun TalkProjectTitle(
+    project: TalkProject?,
+    connecting: Boolean,
+) {
+    if (project == null && connecting) {
+        Text(stringResource(R.string.realtime_title))
+        return
+    }
+    val name = project?.name ?: stringResource(R.string.realtime_no_focus)
+    val description = stringResource(R.string.realtime_project, name)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.clearAndSetSemantics { contentDescription = description }.testTag("voice_project"),
+    ) {
+        Icon(
+            if (project != null) Icons.Filled.Folder else Icons.Filled.FolderOff,
+            contentDescription = null,
+            tint =
+                if (project !=
+                    null
+                ) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            name,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 10.dp),
+            color =
+                if (project !=
+                    null
+                ) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TalkVoiceStage(
     state: TalkCallState,
@@ -285,19 +377,6 @@ private fun TalkVoiceStage(
     val notice = permissionDenied || backgroundEnded || state.error != null
     val running = remember(state.jobs) { state.jobs.count { it.text("status") == "running" } }
     val latest = remember(state.assistantText, state.userText) { state.assistantText.ifBlank { state.userText } }
-    val heading =
-        when {
-            permissionDenied -> R.string.realtime_state_permission
-            backgroundEnded -> R.string.realtime_state_ended
-            state.phase == "error" -> R.string.realtime_state_error
-            state.phase == "speaking" -> R.string.realtime_state_speaking
-            state.phase == "executing" -> R.string.realtime_state_working
-            state.muted -> R.string.realtime_state_muted
-            state.phase == "listening" || state.phase == "connected" -> R.string.realtime_state_listening
-            state.phase == "ended" -> R.string.realtime_state_ended
-            state.phase == "idle" -> R.string.realtime_state_ready
-            else -> R.string.realtime_state_connecting
-        }
     BoxWithConstraints(modifier.fillMaxWidth()) {
         Column(
             Modifier
@@ -307,21 +386,8 @@ private fun TalkVoiceStage(
                 ).heightIn(min = maxHeight)
                 .padding(vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
         ) {
-            Text(
-                stringResource(R.string.realtime_global_short),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(18.dp))
-            Text(
-                stringResource(heading),
-                style = MaterialTheme.typography.headlineMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
             TalkNotice(
                 phase = state.phase,
                 error = state.error,
@@ -330,7 +396,7 @@ private fun TalkVoiceStage(
                 onPermission = onPermission,
                 onReconnect = onReconnect,
             )
-            TalkToolLine(state.tool, state.handoffs.size, Modifier.padding(top = 6.dp))
+            TalkLogo(if (notice) 88.dp else 136.dp)
             TalkVoiceVisual(
                 phase = if (permissionDenied || backgroundEnded) "ended" else state.phase,
                 muted = state.muted || permissionDenied || backgroundEnded,
@@ -338,59 +404,79 @@ private fun TalkVoiceStage(
                 interactive = canInterrupt,
                 interruptLabel = stringResource(R.string.realtime_interrupt),
                 onInterrupt = onInterrupt,
-                modifier = Modifier.fillMaxWidth().height(if (notice) 104.dp else 208.dp).testTag("voice_interrupt"),
+                modifier = Modifier.fillMaxWidth().height(if (notice) 72.dp else 120.dp).testTag("voice_interrupt"),
             )
-            if (!notice) {
-                Text(
-                    stringResource(
-                        when {
-                            state.phase == "executing" -> {
-                                R.string.realtime_working_hint
-                            }
-
-                            canInterrupt -> {
-                                R.string.realtime_interrupt_hint
-                            }
-
-                            state.muted -> {
-                                R.string.realtime_muted_hint
-                            }
-
-                            state.phase == "listening" || state.phase == "connected" -> {
-                                R.string.realtime_listening_hint
-                            }
-
-                            state.phase == "idle" || state.phase == "ended" || state.phase == "error" -> {
-                                R.string.realtime_resume_hint
-                            }
-
-                            else -> {
-                                R.string.realtime_connecting_hint
-                            }
-                        },
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            if (latest.isNotBlank()) {
-                Spacer(Modifier.height(18.dp))
-                Text(latest, maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                TextButton(onClick = onActivity, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.realtime_view_transcript))
-                }
-            }
-            if (running > 0) {
-                TextButton(onClick = onActivity, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Icon(Icons.Filled.Work, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text(
-                        pluralStringResource(R.plurals.realtime_running_work, running, running),
-                        Modifier.padding(start = 6.dp),
+            TalkPhaseBadge(state.phase, state.muted, permissionDenied, backgroundEnded)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TalkToolLine(state.tool, state.handoffs.size)
+                if (running > 0) {
+                    TalkChip(
+                        icon = Icons.Filled.Work,
+                        text = pluralStringResource(R.plurals.realtime_running_work, running, running),
+                        onClick = onActivity,
                     )
                 }
             }
+            if (latest.isNotBlank()) {
+                Text(
+                    latest,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier =
+                        Modifier
+                            .heightIn(min = 48.dp)
+                            .clickable(role = Role.Button, onClick = onActivity)
+                            .padding(horizontal = 12.dp),
+                )
+            }
         }
+    }
+}
+
+/** Phase as one icon; the spoken name is only for accessibility. */
+@Composable
+private fun TalkPhaseBadge(
+    phase: String,
+    muted: Boolean,
+    permissionDenied: Boolean,
+    backgroundEnded: Boolean,
+) {
+    val colors = MaterialTheme.colorScheme
+    val (icon, label) =
+        when {
+            permissionDenied -> Icons.Filled.MicOff to R.string.realtime_state_permission
+            backgroundEnded || phase == "ended" -> Icons.Filled.CallEnd to R.string.realtime_state_ended
+            phase == "error" -> Icons.Filled.ErrorOutline to R.string.realtime_state_error
+            phase == "speaking" -> Icons.AutoMirrored.Filled.VolumeUp to R.string.realtime_state_speaking
+            phase == "executing" -> Icons.Filled.Sync to R.string.realtime_state_working
+            muted -> Icons.Filled.MicOff to R.string.realtime_state_muted
+            phase == "listening" || phase == "connected" -> Icons.Filled.Mic to R.string.realtime_state_listening
+            phase == "idle" -> Icons.Filled.Refresh to R.string.realtime_state_ready
+            else -> Icons.Filled.Sync to R.string.realtime_state_connecting
+        }
+    val description = stringResource(label)
+    Surface(
+        shape = CircleShape,
+        color = if (phase == "error") colors.errorContainer else colors.secondaryContainer,
+        contentColor = if (phase == "error") colors.onErrorContainer else colors.onSecondaryContainer,
+        modifier =
+            Modifier
+                .size(48.dp)
+                .testTag("voice_phase")
+                .clearAndSetSemantics {
+                    contentDescription = description
+                    liveRegion = LiveRegionMode.Polite
+                },
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp)) }
     }
 }
 
@@ -407,7 +493,7 @@ private fun TalkNotice(
     Column(
         Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (permissionDenied) {
             Text(
@@ -416,14 +502,16 @@ private fun TalkNotice(
                 textAlign = TextAlign.Center,
             )
             Button(onClick = onPermission, modifier = Modifier.heightIn(min = 48.dp).testTag("voice_permission")) {
-                Text(stringResource(R.string.realtime_retry_permission))
+                Icon(Icons.Filled.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(stringResource(R.string.realtime_retry_permission), Modifier.padding(start = 8.dp))
             }
         }
         if (backgroundEnded) Text(stringResource(R.string.realtime_background), textAlign = TextAlign.Center)
         error?.let { Text(it, color = statusColors.error, textAlign = TextAlign.Center) }
         if (!permissionDenied && (backgroundEnded || phase == "idle" || phase == "error" || phase == "ended")) {
             Button(onClick = onReconnect, modifier = Modifier.heightIn(min = 48.dp).testTag("voice_reconnect")) {
-                Text(stringResource(R.string.realtime_reconnect))
+                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(stringResource(R.string.realtime_reconnect), Modifier.padding(start = 8.dp))
             }
         }
     }
@@ -432,86 +520,115 @@ private fun TalkNotice(
 @Composable
 private fun TalkControls(
     muted: Boolean,
+    speaker: Boolean,
     canControl: Boolean,
     activityVisible: Boolean,
     onMute: () -> Unit,
+    onSpeaker: () -> Unit,
     onClose: () -> Unit,
     onActivity: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val toggleColors =
+        IconButtonDefaults.iconToggleButtonColors(
+            containerColor = colors.surfaceContainerHigh,
+            contentColor = colors.onSurface,
+            checkedContainerColor = colors.primary,
+            checkedContentColor = colors.onPrimary,
+        )
     val muteLabel = stringResource(if (muted) R.string.realtime_unmute else R.string.realtime_mute)
     val micState = stringResource(if (muted) R.string.realtime_state_muted else R.string.realtime_mic_on)
+    val speakerLabel = stringResource(if (speaker) R.string.realtime_speaker_on else R.string.realtime_speaker_off)
     val activityLabel =
         stringResource(if (activityVisible) R.string.realtime_voice_view else R.string.realtime_activity)
     Row(
-        Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 18.dp).testTag("voice_controls"),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
+        Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 24.dp).testTag("voice_controls"),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            IconToggleButton(
-                checked = muted,
-                onCheckedChange = { onMute() },
-                enabled = canControl,
-                modifier = Modifier.size(64.dp).testTag("voice_mute").semantics { stateDescription = micState },
-                colors =
-                    IconButtonDefaults.iconToggleButtonColors(
-                        containerColor = colors.surfaceContainerHigh,
-                        contentColor = colors.onSurface,
-                        checkedContainerColor = colors.secondaryContainer,
-                        checkedContentColor = colors.onSecondaryContainer,
-                    ),
-            ) {
-                Icon(if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, contentDescription = muteLabel)
-            }
-            ControlLabel(muteLabel)
+        IconToggleButton(
+            checked = muted,
+            onCheckedChange = { onMute() },
+            enabled = canControl,
+            modifier = Modifier.size(64.dp).testTag("voice_mute").semantics { stateDescription = micState },
+            colors = toggleColors,
+        ) {
+            Icon(if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, contentDescription = muteLabel)
         }
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.size(64.dp).testTag("voice_end"),
-                shape = CircleShape,
-                colors =
-                    IconButtonDefaults.iconButtonColors(
-                        containerColor = colors.errorContainer,
-                        contentColor = colors.onErrorContainer,
-                    ),
-            ) {
-                Icon(Icons.Filled.CallEnd, contentDescription = stringResource(R.string.realtime_end))
-            }
-            ControlLabel(stringResource(R.string.realtime_end))
+        IconToggleButton(
+            checked = speaker,
+            onCheckedChange = { onSpeaker() },
+            modifier = Modifier.size(64.dp).testTag("voice_speaker"),
+            colors = toggleColors,
+        ) {
+            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = speakerLabel)
         }
-        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-            IconButton(
-                onClick = onActivity,
-                modifier = Modifier.size(64.dp).testTag("voice_activity"),
-                shape = CircleShape,
-                colors =
-                    IconButtonDefaults.iconButtonColors(
-                        containerColor = if (activityVisible) colors.primaryContainer else colors.surfaceContainerHigh,
-                        contentColor = if (activityVisible) colors.onPrimaryContainer else colors.onSurface,
-                    ),
-            ) {
-                Icon(
-                    if (activityVisible) Icons.Filled.GraphicEq else Icons.AutoMirrored.Filled.Notes,
-                    contentDescription = activityLabel,
-                )
-            }
-            ControlLabel(activityLabel)
+        IconToggleButton(
+            checked = activityVisible,
+            onCheckedChange = { onActivity() },
+            modifier = Modifier.size(64.dp).testTag("voice_activity"),
+            colors = toggleColors,
+        ) {
+            Icon(
+                if (activityVisible) Icons.Filled.GraphicEq else Icons.AutoMirrored.Filled.Notes,
+                contentDescription = activityLabel,
+            )
+        }
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier.size(72.dp).testTag("voice_end"),
+            shape = CircleShape,
+            colors =
+                IconButtonDefaults.iconButtonColors(
+                    containerColor = colors.error,
+                    contentColor = colors.onError,
+                ),
+        ) {
+            Icon(
+                Icons.Filled.CallEnd,
+                contentDescription = stringResource(R.string.realtime_end),
+                modifier = Modifier.size(30.dp),
+            )
         }
     }
 }
 
+/** Compact icon + text status, optionally a button. */
 @Composable
-private fun ControlLabel(label: String) {
-    Text(
-        label,
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp).clearAndSetSemantics {},
-        style = MaterialTheme.typography.labelLarge,
-        textAlign = TextAlign.Center,
-    )
+internal fun TalkChip(
+    icon: ImageVector,
+    text: String,
+    modifier: Modifier = Modifier,
+    warning: Boolean = false,
+    onClick: (() -> Unit)? = null,
+) {
+    val colors = MaterialTheme.colorScheme
+    val tint = if (warning) LocalHermesStatusColors.current.warning else colors.onSurfaceVariant
+    val clickable =
+        if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier
+    Surface(
+        shape = CircleShape,
+        color = colors.surfaceContainerHigh,
+        modifier = modifier.heightIn(min = 36.dp),
+    ) {
+        Row(
+            clickable.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (warning) tint else colors.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+    }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TalkActivity(
     userText: String,
@@ -537,76 +654,103 @@ private fun TalkActivity(
     LazyColumn(
         modifier.fillMaxWidth().testTag("voice_activity_content"),
         state = list,
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             TalkNotice(phase, error, permissionDenied, backgroundEnded, onPermission, onReconnect)
-            TalkToolLine(tool, waiting, Modifier.fillMaxWidth().padding(top = 6.dp))
-            if (canInterrupt) {
-                TextButton(onClick = onInterrupt, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.realtime_interrupt))
+            FlowRow(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TalkToolLine(tool, waiting)
+                if (canInterrupt) {
+                    TalkChip(
+                        icon = Icons.Filled.Stop,
+                        text = stringResource(R.string.realtime_interrupt),
+                        onClick = onInterrupt,
+                    )
                 }
             }
         }
         if (receipt.isNotBlank()) {
             item {
-                Text(stringResource(R.string.realtime_receipt), style = MaterialTheme.typography.titleMedium)
-                SelectionContainer { Text(receipt) }
-                HorizontalDivider(Modifier.padding(top = 18.dp))
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionHeader(Icons.AutoMirrored.Filled.ReceiptLong, R.string.realtime_receipt)
+                        SelectionContainer { Text(receipt, style = MaterialTheme.typography.bodyMedium) }
+                    }
+                }
             }
         }
         item {
-            Text(stringResource(R.string.realtime_latest_exchange), style = MaterialTheme.typography.titleLarge)
             if (userText.isBlank() && assistantText.isBlank()) {
                 Text(
                     stringResource(R.string.realtime_no_transcript),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
                 )
             }
-            Transcript(R.string.realtime_you, userText)
-            Transcript(R.string.realtime_assistant, assistantText)
+            Bubble(R.string.realtime_you, userText, mine = true)
+            Bubble(R.string.realtime_assistant, assistantText, mine = false)
         }
         item {
-            HorizontalDivider()
-            Text(
-                stringResource(R.string.realtime_jobs),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(top = 18.dp),
-            )
-            Text(stringResource(R.string.realtime_work_source), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.realtime_work_note), style = MaterialTheme.typography.bodySmall)
+            SectionHeader(Icons.Filled.Work, R.string.realtime_jobs, Modifier.padding(top = 12.dp))
             if (jobs.isEmpty()) {
-                Text(stringResource(R.string.realtime_no_work), modifier = Modifier.padding(top = 12.dp))
+                Text(
+                    stringResource(R.string.realtime_no_work),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
         }
         items(jobs) { job ->
             TalkJob(job, onStop = { onStop(job) }, onResult = { onResult(job) })
         }
-        item {
-            HorizontalDivider()
-            Text(
-                stringResource(R.string.realtime_global_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 18.dp),
-            )
-        }
+        item { Spacer(Modifier.height(12.dp)) }
     }
 }
 
 @Composable
-private fun Transcript(
+private fun SectionHeader(
+    icon: ImageVector,
+    text: Int,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        Text(
+            stringResource(text),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun Bubble(
     label: Int,
     text: String,
+    mine: Boolean,
 ) {
-    if (text.isNotBlank()) {
-        Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                stringResource(label),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            SelectionContainer { Text(text) }
+    if (text.isBlank()) return
+    val colors = MaterialTheme.colorScheme
+    val description = stringResource(label)
+    Box(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = if (mine) colors.primaryContainer else colors.surfaceContainerHigh,
+            contentColor = if (mine) colors.onPrimaryContainer else colors.onSurface,
+            modifier = Modifier.widthIn(max = 520.dp).semantics { contentDescription = description },
+        ) {
+            SelectionContainer { Text(text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) }
         }
     }
 }
@@ -618,35 +762,105 @@ private fun TalkJob(
     onResult: () -> Unit,
 ) {
     val status = job.text("status")
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            stringResource(R.string.realtime_run, job.text("runId"), job.text("kind")),
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(stringResource(R.string.realtime_job_status, status))
-        if (status == "running") {
-            TextButton(onClick = onStop, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text(stringResource(R.string.realtime_stop_work))
+    val statusColors = LocalHermesStatusColors.current
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                when (status) {
+                    "running" -> {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+
+                    "done", "completed" -> {
+                        Icon(
+                            Icons.Filled.CheckCircle,
+                            null,
+                            tint = statusColors.success,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    "failed" -> {
+                        Icon(
+                            Icons.Filled.ErrorOutline,
+                            null,
+                            tint = statusColors.error,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    else -> {
+                        Icon(
+                            Icons.AutoMirrored.Filled.HelpOutline,
+                            null,
+                            tint = statusColors.warning,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                    Text(
+                        stringResource(R.string.realtime_run, job.text("runId"), job.text("kind")),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        when (status) {
+                            "running" -> stringResource(R.string.realtime_status_running)
+                            "done", "completed" -> stringResource(R.string.realtime_status_done)
+                            "failed" -> stringResource(R.string.realtime_status_failed)
+                            "lost" -> stringResource(R.string.realtime_status_lost)
+                            else -> status
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-        }
-        if (job.text("output").isNotBlank()) {
-            TextButton(onClick = onResult, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text(stringResource(R.string.realtime_result))
+            if (status == "running" || job.text("output").isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (job.text("output").isNotBlank()) {
+                        TextButton(onClick = onResult, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(stringResource(R.string.realtime_result), Modifier.padding(start = 6.dp))
+                        }
+                    }
+                    if (status == "running") {
+                        TextButton(onClick = onStop, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(stringResource(R.string.realtime_stop_work), Modifier.padding(start = 6.dp))
+                        }
+                    }
+                }
             }
         }
     }
 }
 
+private val PreviewProject = TalkProject(id = "p_pilot", name = "Agent Team Local Pilot", primaryPath = "/srv/pilot")
+
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 internal fun RealtimeTalkPreview() {
-    TalkScenePreview(TalkCallState(phase = "listening", level = 0.35f), ThemePreference.DARK)
+    TalkScenePreview(
+        TalkCallState(
+            phase = "listening",
+            level = 0.35f,
+            focusProject = PreviewProject,
+            assistantText = "好，要我把這個需求交給 Orchestrator 嗎？",
+            tool = TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, "delegate_task", "5"),
+        ),
+        ThemePreference.DARK,
+    )
 }
 
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 internal fun RealtimeTalkMutedPreview() {
-    TalkScenePreview(TalkCallState(phase = "listening", muted = true), ThemePreference.LIGHT)
+    TalkScenePreview(TalkCallState(phase = "listening", muted = true, speaker = false), ThemePreference.LIGHT)
 }
 
 @Preview(showBackground = true, widthDp = 320, heightDp = 640, fontScale = 1.5f)
@@ -672,6 +886,7 @@ private fun TalkScenePreview(
             onPermission = {},
             onReconnect = {},
             onMute = {},
+            onSpeaker = {},
             onInterrupt = {},
             onStop = {},
             onResult = {},
@@ -682,19 +897,25 @@ private fun TalkScenePreview(
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)
 @Composable
 internal fun RealtimeTalkActivityPreview() {
-    val job =
+    val jobs =
         remember {
-            Json.parseToJsonElement("""{"runId":42,"kind":"hermes","status":"running","output":""}""").jsonObject
+            listOf(
+                """{"runId":5,"kind":"agent","status":"running","output":""}""",
+                """{"runId":4,"kind":"agent","status":"done","output":"Created t_5bf04904."}""",
+            ).map { Json.parseToJsonElement(it).jsonObject }
         }
     HermesControlTheme(themePreference = ThemePreference.DARK) {
-        HermesScaffold(title = { Text(stringResource(R.string.realtime_title)) }, showConnectionBanner = false) {
+        HermesScaffold(
+            title = { TalkProjectTitle(PreviewProject, connecting = false) },
+            showConnectionBanner = false,
+        ) {
             Column(Modifier.fillMaxSize().padding(horizontal = 18.dp)) {
                 TalkActivity(
                     userText = "Review my changes.",
                     assistantText = "The work is running.",
-                    jobs = listOf(job),
+                    jobs = jobs,
                     receipt = "",
-                    tool = TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, "delegate_task", "42"),
+                    tool = TalkToolActivity(TalkToolStatus.TALK_ACCEPTED, "delegate_task", "5"),
                     waiting = 0,
                     phase = "speaking",
                     error = null,
@@ -708,7 +929,7 @@ internal fun RealtimeTalkActivityPreview() {
                     onResult = {},
                     modifier = Modifier.weight(1f),
                 )
-                TalkControls(false, true, true, {}, {}, {})
+                TalkControls(false, true, true, true, {}, {}, {}, {})
             }
         }
     }
@@ -717,5 +938,8 @@ internal fun RealtimeTalkActivityPreview() {
 @Preview(showBackground = true, widthDp = 840, heightDp = 640, locale = "zh-rTW")
 @Composable
 internal fun RealtimeTalkWidePreview() {
-    TalkScenePreview(TalkCallState(phase = "speaking", muted = true), ThemePreference.DARK)
+    TalkScenePreview(
+        TalkCallState(phase = "speaking", muted = true, focusProject = PreviewProject),
+        ThemePreference.DARK,
+    )
 }

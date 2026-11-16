@@ -60,7 +60,7 @@ data class TalkProjectCatalog(
                 if (focus == null) {
                     "Focus: none."
                 } else {
-                    "Focus: ${focus.id} (${focus.name}), only because voice was opened from its chat. Say it aloud before relying on it."
+                    "Focus: ${focus.id} (${focus.name}), chosen on screen by the operator before this call."
                 },
             )
             appendLine("Rules:")
@@ -69,7 +69,7 @@ data class TalkProjectCatalog(
             )
             appendLine(
                 "2. Project for a handoff: the project the user names, else one already confirmed in this call, " +
-                    "else the focus after saying it aloud, else ask. Never pick between candidates yourself.",
+                    "else the focus. With no focus and no named project, ask. Never pick between candidates yourself.",
             )
             appendLine(
                 "3. delegate_task.task must start with [project:<id>] or [project:none], followed by a complete, " +
@@ -155,7 +155,7 @@ data class TalkHandoff(
     val task: String,
     val tag: ProjectTag,
     val project: TalkProject?,
-    /** True when the model wrote no tag and the card pre-selects the chat's project instead. */
+    /** True when the model wrote no tag and the card uses the project chosen before the call. */
     val fromFocus: Boolean,
     val autoDecompose: Boolean?,
     val heldAtMillis: Long,

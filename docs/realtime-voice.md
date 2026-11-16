@@ -66,19 +66,21 @@ reapplying only the Android customization after upstream upgrades.
 
 ## Project context and handoff
 
-Talk is still global. When a call opens, the app reads the active profile's
-projects (`projects.list`), live Kanban boards bound through `projectId`, and
-`GET kanban/orchestration`. It sends one `conversation.item.create` system item
-after `session.created`. That item lists the projects, a focus project (the
-project of the chat that opened voice, if any) and the handoff rules. It does
-not replace Talk's session instructions or tools, and it never requests a
-response. Catalog failure narrows the confirmation card; it does not block voice.
+Talk is still global. When the voice dialog opens, the app reads the active
+profile's projects (`projects.list`), live Kanban boards bound through
+`projectId`, and `GET kanban/orchestration`. A pre-call lobby lists the projects
+(the chat's project is pre-selected) plus "no specific project"; nothing
+connects until Start. After `session.created` the app sends one
+`conversation.item.create` system item with the projects, the chosen focus
+project and the handoff rules. It does not replace Talk's session instructions
+or tools, and it never requests a response. Catalog failure narrows the picker
+and the confirmation card; it does not block voice.
 
 Every `delegate_task` call is held. The function output tells the model that
 nothing started. The confirmation card shows the proposed project, its folder,
 bound boards, the Orchestrator auto-decompose setting and the full brief. The
 model's `[project:<id>]` prefix is only a proposal. An untagged brief may
-pre-select the focus project, which the card labels as unconfirmed.
+pre-select the focus project, which the card labels as not named in speech.
 
 | Operator choice | Effect |
 | --- | --- |
@@ -100,6 +102,11 @@ project directory is Hermes Kanban behavior, not verified by this app.
 
 ## Voice interface
 
-[Dots Focus design](realtime-voice-design.md) records the selected immersive UI,
-the first-party references and the limits of the design prototype. That redesign
-was presentation-only; Kanban handoff is the separate section above.
+[Dots Focus design](realtime-voice-design.md) records the original immersive UI
+and its references. The current call screen keeps that layout and adds: the
+chosen project in the top bar, the Hermes Agent mark above the dots, a phase
+icon instead of status text, and a Mute / Speaker / Activity / End dock.
+Speaker (default on) selects the built-in loudspeaker as the communication
+device, re-applied when playout starts; off returns to the earpiece or a headset.
+The dialog window keeps the screen on for the whole call. Leaving the
+foreground still ends voice.

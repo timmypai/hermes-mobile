@@ -2,9 +2,11 @@ package com.m57.hermescontrol.ui.voice
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.os.Build
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +46,7 @@ class NativeRealtimePeer(
     private val audioManager = applicationContext.getSystemService(AudioManager::class.java)
     private val closed = AtomicBoolean(false)
     private val microphoneMuted = AtomicBoolean(false)
+    private val speakerOn = AtomicBoolean(true)
 
     @Volatile
     private var peerThread: Thread? = null
@@ -129,6 +132,12 @@ class NativeRealtimePeer(
         }
     }
 
+    /** Loudspeaker or earpiece. A connected headset still takes over when the speaker is off. */
+    fun speaker(enabled: Boolean) {
+        speakerOn.set(enabled)
+        dispatch { if (focusRequest != null) routeOutput() }
+    }
+
     /** Stops provider speech only; this never cancels a Hermes task or coroutine. */
     fun interrupt() {
         dispatch {
@@ -178,6 +187,13 @@ class NativeRealtimePeer(
                         ) = playoutFailed()
 
                         override fun onWebRtcAudioTrackError(errorMessage: String) = playoutFailed()
+                    },
+                ).setAudioTrackStateCallback(
+                    // Some devices (vivo) drop a route chosen before playout exists; apply it again.
+                    object : JavaAudioDeviceModule.AudioTrackStateCallback {
+                        override fun onWebRtcAudioTrackStart() = dispatch { if (focusRequest != null) routeOutput() }
+
+                        override fun onWebRtcAudioTrackStop() = Unit
                     },
                 ).createAudioDeviceModule()
         audioDevice = module
@@ -364,6 +380,34 @@ class NativeRealtimePeer(
         focusRequest = request
         previousAudioMode = audioManager.mode
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        routeOutput()
+    }
+
+    private fun routeOutput() {
+        val enabled = speakerOn.get()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val speaker =
+                audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+            if (enabled && speaker != null) {
+                audioManager.setCommunicationDevice(speaker)
+            } else {
+                audioManager.clearCommunicationDevice()
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = enabled
+        }
+    }
+
+    private fun resetOutput() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = false
+        }
     }
 
     private fun releaseResources() {
@@ -391,6 +435,7 @@ class NativeRealtimePeer(
                         audioDevice?.release()
                         audioDevice = null
                     } finally {
+                        if (focusRequest != null) resetOutput()
                         focusRequest?.let(audioManager::abandonAudioFocusRequest)
                         focusRequest = null
                         previousAudioMode?.let { mode ->

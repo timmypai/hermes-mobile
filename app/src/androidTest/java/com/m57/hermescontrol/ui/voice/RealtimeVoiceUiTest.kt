@@ -81,6 +81,7 @@ class RealtimeVoiceUiTest {
                                     onPermission = {},
                                     onReconnect = {},
                                     onMute = {},
+                                    onSpeaker = {},
                                     onInterrupt = {},
                                     onStop = {},
                                     onResult = {},
@@ -99,8 +100,8 @@ class RealtimeVoiceUiTest {
             .assertWidthIsAtLeast(48.dp)
             .assertHeightIsAtLeast(48.dp)
             .performClick()
-        compose.onNodeWithText("Hermes Talk").assertIsDisplayed()
-        compose.onNodeWithText(compose.activity.getString(R.string.realtime_global_short)).assertIsDisplayed()
+        compose.onNodeWithTag("voice_project", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("voice_speaker").assertIsDisplayed()
         compose.onNodeWithTag("voice_end").assertIsDisplayed().performClick()
         compose.onNodeWithTag("chat_input").assertTextEquals("keep this draft")
         compose.onNodeWithTag("send_button").assertIsNotEnabled()
@@ -133,6 +134,7 @@ class RealtimeVoiceUiTest {
                 onPermission = {},
                 onReconnect = {},
                 onMute = { muted = !muted },
+                onSpeaker = {},
                 onInterrupt = { interrupted++ },
                 onStop = {
                     assertEquals(job, it)
@@ -189,6 +191,7 @@ class RealtimeVoiceUiTest {
                         onPermission = {},
                         onReconnect = { reconnects++ },
                         onMute = {},
+                        onSpeaker = {},
                         onInterrupt = {},
                         onStop = {},
                         onResult = {},
