@@ -5,6 +5,7 @@ import com.m57.hermescontrol.data.model.ProjectFolder
 import com.m57.hermescontrol.data.model.ProjectInfo
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -35,7 +36,6 @@ class TalkProjectContextTest {
                     KanbanBoard(id = "default"),
                 ),
             focusId = "p_mobile",
-            autoDecompose = true,
         )
 
     @Test
@@ -54,7 +54,6 @@ class TalkProjectContextTest {
                 listOf(ProjectInfo(id = "p_old", archived = true)),
                 emptyList(),
                 "p_old",
-                null,
             )
         assertNull(stale.focusId)
         assertTrue(stale.instructions().contains("Focus: none."))
@@ -70,23 +69,24 @@ class TalkProjectContextTest {
     }
 
     @Test
-    fun `tagged handoff uses the named project and builds a triage task on its board`() {
-        val handoff = hold("[project:p_mobile] Add voice handoff\nDone: tests pass")
+    fun `orchestrator handoff asks Hermes devflow-intake for an EPIC on the project's board`() {
+        val handoff = hold("[project:p_mobile] Add voice handoff\nAC-1 [ui] tests pass", background = false)
 
         assertEquals("p_mobile", handoff.project?.id)
         assertFalse(handoff.fromFocus)
-        val body = handoff.kanbanTask("mobile")!!
-        assertEquals("Add voice handoff", body.title)
-        assertEquals("Add voice handoff\nDone: tests pass", body.body)
-        assertTrue(body.triage)
-        assertEquals("p_mobile", body.projectId)
-        assertNull(body.assignee)
-        assertNull(body.workspacePath)
+        val arguments = handoff.orchestratorArguments("mobile")!!
+        val task = arguments.getValue("task").jsonPrimitive.content
+        assertTrue(task.startsWith("用 devflow-intake skill 建 EPIC，交給 orchestrator"))
+        assertTrue(task.contains("repo：mobile（Kanban board mobile；Hermes 專案 hermes-mobile p_mobile；資料夾 /srv/mobile）"))
+        assertTrue(task.contains("Add voice handoff\nAC-1 [ui] tests pass"))
+        assertFalse(task.contains("[project:"))
+        assertTrue(task.endsWith("已語音確認：使用者已在 Hermes Mobile 畫面確認專案與以上需求。"))
+        assertEquals(JsonPrimitive(false), arguments["background"])
     }
 
     @Test
-    fun `a board outside the shown project never receives the task`() {
-        assertNull(hold("[project:p_mobile] Add voice handoff").kanbanTask("default"))
+    fun `a board outside the shown project never receives the handoff`() {
+        assertNull(hold("[project:p_mobile] Add voice handoff").orchestratorArguments("default"))
     }
 
     @Test
@@ -97,21 +97,33 @@ class TalkProjectContextTest {
 
         val none = hold("[project:none] Check the weather")
         assertNull(none.project)
-        assertFalse(none.canUseKanban)
+        assertFalse(none.canHandToOrchestrator)
 
         val unknown = hold("[project:p_ghost] Add voice handoff")
         assertNull(unknown.project)
         assertEquals(ProjectTag.Named("p_ghost"), unknown.tag)
-        assertNull(unknown.kanbanTask("mobile"))
+        assertNull(unknown.orchestratorArguments("mobile"))
     }
 
     @Test
-    fun `project without a bound board cannot use Kanban`() {
+    fun `project without a bound board cannot go to the Orchestrator`() {
         val docs = hold("[project:p_docs] Update the guide")
         assertEquals("p_docs", docs.project?.id)
-        assertFalse(docs.canUseKanban)
+        assertFalse(docs.canHandToOrchestrator)
     }
 
-    private fun hold(task: String) =
-        TalkHandoff.hold("call-1", JsonObject(mapOf("task" to JsonPrimitive(task))), catalog, nowMillis = 0L)
+    private fun hold(
+        task: String,
+        background: Boolean? = null,
+    ) = TalkHandoff.hold(
+        "call-1",
+        JsonObject(
+            buildMap {
+                put("task", JsonPrimitive(task))
+                background?.let { put("background", JsonPrimitive(it)) }
+            },
+        ),
+        catalog,
+        nowMillis = 0L,
+    )
 }

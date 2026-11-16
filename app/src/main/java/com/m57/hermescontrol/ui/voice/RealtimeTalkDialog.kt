@@ -231,7 +231,7 @@ fun RealtimeTalkDialog(
             ) {
                 TalkHandoffCard(
                     handoff = handoff,
-                    onKanban = { board -> controller.handToKanban(handoff, board) },
+                    onOrchestrator = { board -> controller.handToOrchestrator(handoff, board) },
                     onTalk = { controller.runInTalk(handoff) },
                     onWrongProject = { controller.decline(handoff, wrongProject = true) },
                     onCancel = { controller.decline(handoff, wrongProject = false) },

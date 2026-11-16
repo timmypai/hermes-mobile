@@ -58,12 +58,10 @@
     <string name="realtime_handoff_missing_project">No project identified</string>
     <string name="realtime_handoff_from_focus">The chat\'s project, not named in speech</string>
     <string name="realtime_handoff_no_board">No bound board</string>
-    <string name="realtime_handoff_decompose_on">Auto-decompose: on</string>
-    <string name="realtime_handoff_decompose_off">Auto-decompose: off (stays in triage)</string>
-    <string name="realtime_handoff_decompose_unknown">Auto-decompose: unknown</string>
+    <string name="realtime_handoff_intake">Hermes creates an [EPIC] card (devflow-intake); the Orchestrator plans and runs it</string>
     <string name="realtime_handoff_more">More</string>
     <string name="realtime_handoff_less">Less</string>
-    <string name="realtime_handoff_kanban">Send to Orchestrator</string>
+    <string name="realtime_handoff_orchestrator">Send to Orchestrator</string>
     <string name="realtime_handoff_talk">Run now in Talk</string>
     <string name="realtime_handoff_wrong_project">Wrong project</string>
     <string name="realtime_handoff_cancel">Cancel</string>
@@ -71,7 +69,7 @@
     <string name="realtime_tool_running">%1$s</string>
     <string name="realtime_tool_finished">%1$s done</string>
     <string name="realtime_tool_talk_accepted">Talk #%1$s · %2$s</string>
-    <string name="realtime_tool_kanban_created">Board task %1$s</string>
+    <string name="realtime_tool_intake_started">Hermes #%1$s · creating EPIC for Orchestrator</string>
     <string name="realtime_tool_declined">Not sent</string>
     <string name="realtime_tool_uncertain">Outcome uncertain, not retried</string>
 </resources>

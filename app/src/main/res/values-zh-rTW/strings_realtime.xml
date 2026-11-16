@@ -57,12 +57,10 @@
     <string name="realtime_handoff_missing_project">未指定專案</string>
     <string name="realtime_handoff_from_focus">聊天的專案，對話中未提及</string>
     <string name="realtime_handoff_no_board">沒有綁定看板</string>
-    <string name="realtime_handoff_decompose_on">自動拆解：開</string>
-    <string name="realtime_handoff_decompose_off">自動拆解：關（停在 triage）</string>
-    <string name="realtime_handoff_decompose_unknown">自動拆解：未知</string>
+    <string name="realtime_handoff_intake">Hermes 依 devflow-intake 建立 [EPIC] 卡，由 Orchestrator 規劃與執行</string>
     <string name="realtime_handoff_more">展開</string>
     <string name="realtime_handoff_less">收合</string>
-    <string name="realtime_handoff_kanban">交給 Orchestrator</string>
+    <string name="realtime_handoff_orchestrator">交給 Orchestrator</string>
     <string name="realtime_handoff_talk">立即在 Talk 執行</string>
     <string name="realtime_handoff_wrong_project">專案不對</string>
     <string name="realtime_handoff_cancel">取消</string>
@@ -70,7 +68,7 @@
     <string name="realtime_tool_running">%1$s</string>
     <string name="realtime_tool_finished">%1$s 完成</string>
     <string name="realtime_tool_talk_accepted">Talk #%1$s · %2$s</string>
-    <string name="realtime_tool_kanban_created">看板任務 %1$s</string>
+    <string name="realtime_tool_intake_started">Hermes #%1$s · 建立 EPIC 交給 Orchestrator</string>
     <string name="realtime_tool_declined">未送出</string>
     <string name="realtime_tool_uncertain">結果不確定，不重試</string>
 </resources>

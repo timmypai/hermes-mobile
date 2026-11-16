@@ -75,7 +75,7 @@ import com.m57.hermescontrol.ui.common.ExpressiveTextButton as TextButton
 @Composable
 internal fun TalkHandoffCard(
     handoff: TalkHandoff,
-    onKanban: (board: String) -> Unit,
+    onOrchestrator: (board: String) -> Unit,
     onTalk: () -> Unit,
     onWrongProject: () -> Unit,
     onCancel: () -> Unit,
@@ -159,31 +159,21 @@ internal fun TalkHandoffCard(
                             )
                         }
                     }
-                    InfoLine(
-                        Icons.Filled.AccountTree,
-                        stringResource(
-                            when (handoff.autoDecompose) {
-                                true -> R.string.realtime_handoff_decompose_on
-                                false -> R.string.realtime_handoff_decompose_off
-                                null -> R.string.realtime_handoff_decompose_unknown
-                            },
-                        ),
-                        warning = handoff.autoDecompose != true,
-                    )
+                    InfoLine(Icons.Filled.AccountTree, stringResource(R.string.realtime_handoff_intake))
                 }
             }
 
             TaskBlock(handoff)
 
-            val kanbanBoard = board
+            val selectedBoard = board
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = { kanbanBoard?.let(onKanban) },
-                    enabled = handoff.canUseKanban && kanbanBoard != null,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("voice_handoff_kanban"),
+                    onClick = { selectedBoard?.let(onOrchestrator) },
+                    enabled = handoff.canHandToOrchestrator && selectedBoard != null,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("voice_handoff_orchestrator"),
                 ) {
                     Icon(Icons.Filled.AccountTree, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Text(stringResource(R.string.realtime_handoff_kanban), Modifier.padding(start = 10.dp))
+                    Text(stringResource(R.string.realtime_handoff_orchestrator), Modifier.padding(start = 10.dp))
                 }
                 OutlinedButton(
                     onClick = onTalk,
@@ -343,7 +333,7 @@ internal fun TalkToolLine(
             TalkToolStatus.AWAITING_CONFIRMATION -> Icons.Filled.PendingActions
             TalkToolStatus.FINISHED -> Icons.Filled.CheckCircle
             TalkToolStatus.TALK_ACCEPTED -> Icons.Filled.RocketLaunch
-            TalkToolStatus.KANBAN_CREATED -> Icons.Filled.ViewKanban
+            TalkToolStatus.INTAKE_STARTED -> Icons.Filled.AccountTree
             TalkToolStatus.DECLINED -> Icons.Filled.Block
             TalkToolStatus.UNCERTAIN -> Icons.AutoMirrored.Filled.HelpOutline
         }
@@ -370,11 +360,8 @@ internal fun TalkToolLine(
                 )
             }
 
-            TalkToolStatus.KANBAN_CREATED -> {
-                stringResource(
-                    R.string.realtime_tool_kanban_created,
-                    tool?.reference.orEmpty(),
-                )
+            TalkToolStatus.INTAKE_STARTED -> {
+                stringResource(R.string.realtime_tool_intake_started, tool?.reference.orEmpty())
             }
 
             TalkToolStatus.DECLINED -> {
@@ -416,10 +403,9 @@ internal fun TalkHandoffCardPreview() {
                     tag = ProjectTag.Named("p_mobile"),
                     project = project,
                     fromFocus = false,
-                    autoDecompose = true,
                     heldAtMillis = 0L,
                 ),
-            onKanban = {},
+            onOrchestrator = {},
             onTalk = {},
             onWrongProject = {},
             onCancel = {},
@@ -441,10 +427,9 @@ internal fun TalkHandoffCardMissingProjectPreview() {
                     tag = ProjectTag.Missing,
                     project = null,
                     fromFocus = false,
-                    autoDecompose = null,
                     heldAtMillis = 0L,
                 ),
-            onKanban = {},
+            onOrchestrator = {},
             onTalk = {},
             onWrongProject = {},
             onCancel = {},

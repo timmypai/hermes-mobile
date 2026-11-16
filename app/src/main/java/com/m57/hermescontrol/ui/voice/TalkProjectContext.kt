@@ -1,9 +1,9 @@
 package com.m57.hermescontrol.ui.voice
 
-import com.m57.hermescontrol.data.model.CreateTaskBody
 import com.m57.hermescontrol.data.model.KanbanBoard
 import com.m57.hermescontrol.data.model.ProjectInfo
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** A Kanban board bound to a Hermes Project through `projectId`. */
 data class TalkBoard(
@@ -27,7 +27,6 @@ data class TalkProject(
 data class TalkProjectCatalog(
     val projects: List<TalkProject> = emptyList(),
     val focusId: String? = null,
-    val autoDecompose: Boolean? = null,
 ) {
     fun find(id: String?): TalkProject? = projects.firstOrNull { it.id == id }
 
@@ -73,12 +72,14 @@ data class TalkProjectCatalog(
             )
             appendLine(
                 "3. delegate_task.task must start with [project:<id>] or [project:none], followed by a complete, " +
-                    "self-contained brief: goal, scope, done criteria, and the folder when one applies.",
+                    "self-contained brief: goal, scope, numbered acceptance criteria (AC-1, AC-2, ...) that the user " +
+                    "can check, what must not be touched, the user's own words, and the folder when one applies.",
             )
             appendLine(
-                "4. The app holds every delegate_task for on-screen confirmation. The operator chooses Kanban triage " +
-                    "for Orchestrator decomposition, an immediate Talk background run, or cancel. Until a later " +
-                    "app message reports the result, say only that it is waiting for confirmation.",
+                "4. The app holds every delegate_task for on-screen confirmation. The operator chooses Orchestrator " +
+                    "(Hermes runs devflow-intake, which creates an [EPIC] card that the orchestrator plans and " +
+                    "drives), an immediate Talk background run, or cancel. Until a later app message reports the " +
+                    "result, say only that it is waiting for confirmation.",
             )
             append("5. Never invent progress. Use tools that report it, or say that you do not know.")
         }
@@ -91,7 +92,6 @@ data class TalkProjectCatalog(
             projects: List<ProjectInfo>,
             boards: List<KanbanBoard>,
             focusId: String?,
-            autoDecompose: Boolean?,
         ): TalkProjectCatalog {
             val live = boards.filterNot { it.archived }
             val active =
@@ -110,7 +110,7 @@ data class TalkProjectCatalog(
                                 .map { TalkBoard(it.slug, it.displayName, it.isCurrent) },
                     )
                 }
-            return TalkProjectCatalog(active, focusId?.takeIf { id -> active.any { it.id == id } }, autoDecompose)
+            return TalkProjectCatalog(active, focusId?.takeIf { id -> active.any { it.id == id } })
         }
     }
 }
@@ -157,19 +157,38 @@ data class TalkHandoff(
     val project: TalkProject?,
     /** True when the model wrote no tag and the card uses the chat's project. */
     val fromFocus: Boolean,
-    val autoDecompose: Boolean?,
     val heldAtMillis: Long,
 ) {
     val brief: String get() = TalkBrief.body(task)
     val title: String get() = TalkBrief.title(task)
 
-    /** Kanban triage requires a project with at least one bound board. */
-    val canUseKanban: Boolean get() = project != null && project.boards.isNotEmpty() && title.isNotBlank()
+    /** Orchestrator work needs a project bound to a board: in devflow one board is one repository. */
+    val canHandToOrchestrator: Boolean get() = project != null && project.boards.isNotEmpty() && brief.isNotBlank()
 
-    /** Triage on a board of the shown project; assignee and workspace are left to the board and Orchestrator. */
-    fun kanbanTask(board: String): CreateTaskBody? =
-        project?.takeIf { canUseKanban && it.boards.any { option -> option.slug == board } }?.let {
-            CreateTaskBody(title = title, body = brief, triage = true, projectId = it.id)
+    /**
+     * delegate_task arguments for the Hermes default bot's `devflow-intake` skill. Intake checks the
+     * acceptance criteria, deduplicates, and creates the `[EPIC]` card assigned to the orchestrator;
+     * the app never writes Kanban itself. Other model arguments are kept unchanged.
+     */
+    fun orchestratorArguments(board: String): JsonObject? =
+        project?.takeIf { canHandToOrchestrator && it.boards.any { option -> option.slug == board } }?.let {
+            JsonObject(arguments + ("task" to JsonPrimitive(intakeBrief(it, board))))
+        }
+
+    private fun intakeBrief(
+        project: TalkProject,
+        board: String,
+    ): String =
+        buildString {
+            appendLine("用 devflow-intake skill 建 EPIC，交給 orchestrator 規劃與執行。")
+            append("repo：").append(board)
+            append("（Kanban board ").append(board).append("；Hermes 專案 ").append(project.name)
+            append(" ").append(project.id)
+            project.primaryPath?.let { append("；資料夾 ").append(it) }
+            appendLine("）")
+            appendLine("需求（Hermes Talk 語音整理）：")
+            appendLine(brief)
+            append("已語音確認：使用者已在 Hermes Mobile 畫面確認專案與以上需求。")
         }
 
     companion object {
@@ -189,7 +208,6 @@ data class TalkHandoff(
                 tag = tag,
                 project = (tag as? ProjectTag.Named)?.let { catalog.find(it.id) } ?: focus,
                 fromFocus = focus != null,
-                autoDecompose = catalog.autoDecompose,
                 heldAtMillis = nowMillis,
             )
         }
@@ -202,7 +220,7 @@ enum class TalkToolStatus {
     AWAITING_CONFIRMATION,
     FINISHED,
     TALK_ACCEPTED,
-    KANBAN_CREATED,
+    INTAKE_STARTED,
     DECLINED,
     UNCERTAIN,
 }

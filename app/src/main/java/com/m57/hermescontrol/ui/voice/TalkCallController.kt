@@ -3,7 +3,6 @@ package com.m57.hermescontrol.ui.voice
 import android.content.Context
 import com.m57.hermescontrol.data.local.AuthManager
 import com.m57.hermescontrol.data.local.DataScope
-import com.m57.hermescontrol.data.remote.NetworkError
 import com.m57.hermescontrol.data.remote.NetworkResult
 import com.m57.hermescontrol.data.repository.KanbanRepository
 import com.m57.hermescontrol.data.repository.KanbanRepositoryImpl
@@ -304,56 +303,33 @@ class TalkCallController(
             mutableState.update { it.copy(receipt = current.text("output")) }
         }
 
-    /** Operator chose Kanban triage. The Orchestrator, not this app, decomposes and runs the work. */
-    fun handToKanban(
+    /**
+     * Operator chose the Orchestrator. Per devflow, the Hermes default bot owns intake: one delegate_task asks it
+     * to run `devflow-intake`, which creates the `[EPIC]` card assigned to the orchestrator. This app writes no Kanban.
+     */
+    fun handToOrchestrator(
         handoff: TalkHandoff,
         board: String,
     ) {
         val held = take(handoff) ?: return
         enqueue {
             val project = held.project
-            val body = held.kanbanTask(board)
-            if (project == null || body == null) {
+            val arguments = held.orchestratorArguments(board)
+            if (project == null || arguments == null) {
                 announce(TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE), CANCELLED_NOTICE)
-                throw TalkSetupException("Kanban handoff needs a project with a bound board; nothing was created")
+                throw TalkSetupException("The Orchestrator needs a project with a bound board; nothing was sent")
             }
-            when (val result = kanban.createTask(board, body)) {
-                is NetworkResult.Success -> {
-                    val id =
-                        result.data.task
-                            ?.id
-                            .orEmpty()
-                    val decompose =
-                        when (held.autoDecompose) {
-                            true -> "Orchestrator auto-decompose is on."
-                            false -> "Orchestrator auto-decompose is off; it stays in triage until decomposed."
-                            null -> "Whether Orchestrator auto-decompose is on is unknown."
-                        }
-                    mutableState.update { it.copy(receipt = "Kanban triage $id · $board · ${project.name}") }
-                    announce(
-                        TalkToolActivity(TalkToolStatus.KANBAN_CREATED, DELEGATE, id),
-                        "The operator confirmed on screen. Created Kanban triage task $id on board $board " +
-                            "for project ${project.name}. $decompose It is queued; it has not started or " +
-                            "completed. Tell the user briefly.",
-                    )
-                }
-
-                is NetworkResult.Failure -> {
-                    val rejected = (result.error as? NetworkError.Http)?.code in 400..499
-                    announce(
-                        TalkToolActivity(if (rejected) TalkToolStatus.DECLINED else TalkToolStatus.UNCERTAIN, DELEGATE),
-                        if (rejected) {
-                            "Kanban refused the triage task, so nothing was created. Tell the user and ask how to proceed."
-                        } else {
-                            "Creating the Kanban triage task has an uncertain outcome. It will not be retried. " +
-                                "Tell the user to check the board before asking again."
-                        },
-                    )
-                    throw TalkSetupException(
-                        if (rejected) "Kanban refused the triage task" else "Kanban outcome is uncertain; not retried",
-                    )
-                }
-            }
+            val run =
+                delegate(
+                    arguments,
+                    accepted = TalkToolStatus.INTAKE_STARTED,
+                    notice =
+                        "The operator confirmed on screen: Hermes is running devflow-intake to create an " +
+                            "[EPIC] card for the orchestrator on board $board (project ${project.name}). " +
+                            "No card exists yet. When the run reports a card id, say the orchestrator has taken " +
+                            "over; if it returns questions, ask them and delegate again with the answers.",
+                )
+            mutableState.update { it.copy(receipt = "devflow-intake #$run → orchestrator · $board · ${project.name}") }
         }
     }
 
@@ -361,42 +337,51 @@ class TalkCallController(
     fun runInTalk(handoff: TalkHandoff) {
         val held = take(handoff) ?: return
         enqueue {
-            val output =
-                try {
-                    val reply =
-                        checkNotNull(api).post(
-                            "/tool",
-                            buildJsonObject {
-                                put("name", DELEGATE)
-                                put("arguments", held.arguments)
-                            },
-                        )
-                    reply.text("output").takeIf { reply["output"] != null && (reply["ok"] == null || reply.flag("ok")) }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            if (output == null) {
-                announce(
-                    TalkToolActivity(TalkToolStatus.UNCERTAIN, DELEGATE),
-                    "The operator confirmed a Talk background run, but its outcome is uncertain. It will not be " +
-                        "retried. Do not claim that work started or completed.",
-                )
-                throw TalkSetupException("Talk run outcome is uncertain; not retried")
-            }
-            val accepted = WORK_STARTED.find(output)?.groupValues?.get(1)
-            announce(
-                TalkToolActivity(
-                    if (accepted != null) TalkToolStatus.TALK_ACCEPTED else TalkToolStatus.FINISHED,
-                    DELEGATE,
-                    accepted.orEmpty(),
-                ),
-                "The operator confirmed an immediate Talk background run on screen. Talk tool output: " +
-                    output.ifEmpty { "(no output)" },
-                watchOutput = output,
+            delegate(
+                held.arguments,
+                accepted = TalkToolStatus.TALK_ACCEPTED,
+                notice = "The operator confirmed an immediate Talk background run on screen.",
             )
         }
+    }
+
+    /** Posts one delegate_task, never retried. Returns the WORK_STARTED run id, or "" when Talk reported none. */
+    private suspend fun delegate(
+        arguments: JsonObject,
+        accepted: TalkToolStatus,
+        notice: String,
+    ): String {
+        val output =
+            try {
+                val reply =
+                    checkNotNull(api).post(
+                        "/tool",
+                        buildJsonObject {
+                            put("name", DELEGATE)
+                            put("arguments", arguments)
+                        },
+                    )
+                reply.text("output").takeIf { reply["output"] != null && (reply["ok"] == null || reply.flag("ok")) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        if (output == null) {
+            announce(
+                TalkToolActivity(TalkToolStatus.UNCERTAIN, DELEGATE),
+                "The operator confirmed a handoff, but its outcome is uncertain. It will not be retried. " +
+                    "Do not claim that work started or completed.",
+            )
+            throw TalkSetupException("Handoff outcome is uncertain; not retried")
+        }
+        val run = WORK_STARTED.find(output)?.groupValues?.get(1)
+        announce(
+            TalkToolActivity(if (run != null) accepted else TalkToolStatus.FINISHED, DELEGATE, run.orEmpty()),
+            "$notice Talk tool output: ${output.ifEmpty { "(no output)" }}",
+            watchOutput = output,
+        )
+        return run.orEmpty()
     }
 
     /** Nothing is posted. [wrongProject] asks the model to re-identify the project first. */
@@ -449,12 +434,10 @@ class TalkCallController(
             coroutineScope {
                 val listed = async { projects.list() }
                 val boards = async { kanban.getBoards() }
-                val orchestration = async { kanban.getOrchestration() }
                 TalkProjectCatalog.from(
                     projects = (listed.await() as? ProjectsResult.Ok)?.value.orEmpty(),
                     boards = (boards.await() as? NetworkResult.Success)?.data?.boards.orEmpty(),
                     focusId = launch.focusProjectId,
-                    autoDecompose = (orchestration.await() as? NetworkResult.Success)?.data?.autoDecompose,
                 )
             }
         } catch (e: CancellationException) {

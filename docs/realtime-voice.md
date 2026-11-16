@@ -20,8 +20,8 @@ Talk protocol source: `3b8f88bc9b39e7916523964debdce504af4d4990`.
 | Tools | Talk `POST /tool` | Only `name` and `arguments`; ordered outputs and response barrier |
 | Work status/results | Talk `GET /runs` | Server `runId`, `kind`, `status`, `output`; no client task registry |
 | Completion announcement | Existing dashboard global run watcher | Watch only this call's `WORK_STARTED` receipts, announce once while idle |
-| Project context | Gateway `projects.list`, Kanban boards and orchestration settings | One additive system item per call; no session instruction or tool change |
-| Delegation | Talk `delegate_task` | Held by the app; posted or sent to Kanban triage only after an on-screen choice |
+| Project context | Gateway `projects.list`, Kanban boards | One additive system item per call; no session instruction or tool change |
+| Delegation | Talk `delegate_task`; devflow `devflow-intake` (Hermes default bot) | Held by the app; posted once only after an on-screen choice; the app writes no Kanban |
 
 Sources:
 - https://github.com/TheSmokeDev/hermes-talk/tree/3b8f88bc9b39e7916523964debdce504af4d4990
@@ -68,8 +68,8 @@ reapplying only the Android customization after upstream upgrades.
 ## Project context and handoff
 
 Talk is still global. When the voice dialog opens, the app reads the active
-profile's projects (`projects.list`), live Kanban boards bound through
-`projectId`, and `GET kanban/orchestration`. There is no project picker: the
+profile's projects (`projects.list`) and live Kanban boards bound through
+`projectId`. There is no project picker: the
 focus project is the chat's project (`sessionProjectId`, else the staged
 project), and the call connects as soon as the dialog opens. After
 `session.created` the app sends one `conversation.item.create` system item with
@@ -79,27 +79,38 @@ failure narrows the confirmation card; it does not block voice.
 
 Every `delegate_task` call is held. The function output tells the model that
 nothing started. The confirmation card shows the proposed project, its folder,
-bound boards, the Orchestrator auto-decompose setting and the full brief. The
-model's `[project:<id>]` prefix is only a proposal. An untagged brief may
-pre-select the focus project, which the card labels as not named in speech.
+bound boards and the full brief. The model's `[project:<id>]` prefix is only a
+proposal. An untagged brief may pre-select the focus project, which the card
+labels as not named in speech.
+
+In devflow the Hermes default bot owns intake and the orchestrator owns the
+work: intake creates an `[EPIC]` card assigned to `orchestrator`, and the
+existing Dispatcher runs it. The app follows that route instead of writing
+Kanban itself.
 
 | Operator choice | Effect |
 | --- | --- |
-| Send to Orchestrator | `POST kanban/tasks?board=…` with `triage: true`, title, brief and `project_id`; no assignee or workspace override |
+| Send to Orchestrator | One `delegate_task` whose `task` asks Hermes to run `devflow-intake` for the chosen board (one board = one devflow repo), with the project, folder and brief, marked as confirmed; other arguments unchanged |
 | Run now in Talk | The held `name` and `arguments` are posted once, unchanged, to Talk `/tool` |
 | Wrong project / Cancel | Nothing is posted; the model is told to re-identify the project or acknowledge |
 
+Intake checks the acceptance criteria (D0), deduplicates open EPICs and creates
+the card with `kanban_create(assignee="orchestrator", title="[EPIC] …")`. Its run
+result, a card id or questions for the user, comes back through `/runs` and is
+announced like any other Talk work. A `WORK_STARTED` receipt means intake started,
+not that the card exists. Earlier app versions created `triage: true` cards with
+no assignee; those bypassed intake and stay in triage until handed over.
+
 The handoff is removed before any effect, so a repeated tap cannot act twice.
 A held handoff expires after ten minutes; ending or reconnecting the call drops
-it. Kanban 4xx is reported as not created; other failures are uncertain and are
-not retried. Decisions reach the model as system items only when the
-conversation is idle. The UI shows observed tool state (running, waiting,
-accepted, created, declined, uncertain), not an inferred user intent.
+it. A failed or unreadable `/tool` reply is uncertain and is not retried.
+Decisions reach the model as system items only when the conversation is idle.
+The UI shows observed tool state (running, waiting, accepted, intake started,
+declined, uncertain), not an inferred user intent.
 
 The tag cannot prove that the user confirmed the project in speech, and Talk's
-folder text and `resource_keys` do not route work. Kanban triage carries the
-project as structured board/task fields; whether workers honor the board's
-project directory is Hermes Kanban behavior, not verified by this app.
+folder text and `resource_keys` do not route work. The board slug and project in
+the intake brief are what intake uses to pick the devflow repo.
 
 ## Voice interface
 
