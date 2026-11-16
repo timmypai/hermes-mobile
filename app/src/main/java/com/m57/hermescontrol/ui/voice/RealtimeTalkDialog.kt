@@ -347,19 +347,13 @@ private fun TalkProjectTitle(
     val description = stringResource(R.string.realtime_project, name)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.clearAndSetSemantics { contentDescription = description }.testTag("voice_project"),
+        modifier = Modifier.testTag("voice_project").clearAndSetSemantics { contentDescription = description },
     ) {
+        val colors = MaterialTheme.colorScheme
         Icon(
             if (project != null) Icons.Filled.Folder else Icons.Filled.FolderOff,
             contentDescription = null,
-            tint =
-                if (project !=
-                    null
-                ) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
+            tint = if (project != null) colors.primary else colors.onSurfaceVariant,
             modifier = Modifier.size(22.dp),
         )
         Text(
@@ -367,14 +361,7 @@ private fun TalkProjectTitle(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = 10.dp),
-            color =
-                if (project !=
-                    null
-                ) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
+            color = if (project != null) colors.onSurface else colors.onSurfaceVariant,
         )
     }
 }

@@ -103,7 +103,7 @@ class RealtimeVoiceUiTest {
             .performClick()
         compose.onNodeWithTag("voice_project", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("voice_speaker").assertIsDisplayed()
-        compose.onNodeWithTag("voice_end").assertIsDisplayed()
+        compose.onNodeWithTag("voice_call").assertIsDisplayed()
         compose.onNodeWithTag("back_button").performClick()
         compose.onNodeWithTag("chat_input").assertTextEquals("keep this draft")
         compose.onNodeWithTag("send_button").assertIsNotEnabled()
@@ -177,6 +177,10 @@ class RealtimeVoiceUiTest {
             assertEquals(0, ended)
             assertEquals(true, stopped)
         }
+        // Back from Activity returns to voice; only the next Back closes the screen.
+        compose.onNodeWithTag("back_button").performClick()
+        compose.onNodeWithTag("voice_activity_content").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, ended) }
         compose.onNodeWithTag("back_button").performClick()
         compose.runOnIdle { assertEquals(1, ended) }
     }
