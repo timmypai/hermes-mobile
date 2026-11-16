@@ -97,13 +97,17 @@ Kanban itself.
 Intake checks the acceptance criteria (D0), deduplicates open EPICs and creates
 the card with `kanban_create(assignee="orchestrator", title="[EPIC] …")`. Its run
 result, a card id or questions for the user, comes back through `/runs` and is
-announced like any other Talk work. A `WORK_STARTED` receipt means intake started,
+announced like any other Talk work. Only a reply starting with `WORK_STARTED`
+counts as accepted; it means intake started,
 not that the card exists. Earlier app versions created `triage: true` cards with
 no assignee; those bypassed intake and stay in triage until handed over.
 
 The handoff is removed before any effect, so a repeated tap cannot act twice.
 A held handoff expires after ten minutes; ending or reconnecting the call drops
-it. A failed or unreadable `/tool` reply is uncertain and is not retried.
+it. Talk refuses in plain text (admission conflicts, invalid `execution_mode` or
+`resource_keys`, no agent lane); any reply without a `WORK_STARTED` prefix is
+shown as not started, never as finished. A failed, unreadable or `ok: false`
+`/tool` reply is uncertain. Neither is retried.
 Decisions reach the model as system items only when the conversation is idle.
 The UI shows observed tool state (running, waiting, accepted, intake started,
 declined, uncertain), not an inferred user intent.

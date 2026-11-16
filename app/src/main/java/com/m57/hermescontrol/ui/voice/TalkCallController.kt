@@ -319,17 +319,23 @@ class TalkCallController(
                 announce(TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE), CANCELLED_NOTICE)
                 throw TalkSetupException("The Orchestrator needs a project with a bound board; nothing was sent")
             }
-            val run =
+            val started =
                 delegate(
                     arguments,
                     accepted = TalkToolStatus.INTAKE_STARTED,
                     notice =
-                        "The operator confirmed on screen: Hermes is running devflow-intake to create an " +
-                            "[EPIC] card for the orchestrator on board $board (project ${project.name}). " +
-                            "No card exists yet. When the run reports a card id, say the orchestrator has taken " +
-                            "over; if it returns questions, ask them and delegate again with the answers.",
+                        "The operator confirmed on screen and Talk accepted the work: Hermes is running " +
+                            "devflow-intake to create an [EPIC] card for the orchestrator on board $board " +
+                            "(project ${project.name}). No card exists yet. Only when the run reports a card id, " +
+                            "say the orchestrator has taken over; if it returns questions, ask them and delegate " +
+                            "again with the answers.",
                 )
-            mutableState.update { it.copy(receipt = "devflow-intake #$run → orchestrator · $board · ${project.name}") }
+            val run =
+                started.runId
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { " #$it" }
+                    .orEmpty()
+            mutableState.update { it.copy(receipt = "devflow-intake$run → orchestrator · $board · ${project.name}") }
         }
     }
 
@@ -345,43 +351,57 @@ class TalkCallController(
         }
     }
 
-    /** Posts one delegate_task, never retried. Returns the WORK_STARTED run id, or "" when Talk reported none. */
+    /**
+     * Posts one delegate_task, never retried. Only a WORK_STARTED receipt counts as started; Talk's plain-text
+     * refusals (admission, missing lane) are reported as not started, never as finished work.
+     */
     private suspend fun delegate(
         arguments: JsonObject,
         accepted: TalkToolStatus,
         notice: String,
-    ): String {
-        val output =
+    ): DelegateOutcome.Started {
+        val reply =
             try {
-                val reply =
-                    checkNotNull(api).post(
-                        "/tool",
-                        buildJsonObject {
-                            put("name", DELEGATE)
-                            put("arguments", arguments)
-                        },
-                    )
-                reply.text("output").takeIf { reply["output"] != null && (reply["ok"] == null || reply.flag("ok")) }
+                checkNotNull(api).post(
+                    "/tool",
+                    buildJsonObject {
+                        put("name", DELEGATE)
+                        put("arguments", arguments)
+                    },
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 null
             }
-        if (output == null) {
-            announce(
-                TalkToolActivity(TalkToolStatus.UNCERTAIN, DELEGATE),
-                "The operator confirmed a handoff, but its outcome is uncertain. It will not be retried. " +
-                    "Do not claim that work started or completed.",
-            )
-            throw TalkSetupException("Handoff outcome is uncertain; not retried")
+        when (val outcome = DelegateOutcome.of(reply)) {
+            DelegateOutcome.Uncertain -> {
+                announce(
+                    TalkToolActivity(TalkToolStatus.UNCERTAIN, DELEGATE),
+                    "The operator confirmed a handoff, but its outcome is uncertain. It will not be retried. " +
+                        "Do not claim that work started or completed.",
+                )
+                throw TalkSetupException("Handoff outcome is uncertain; not retried")
+            }
+
+            is DelegateOutcome.Refused -> {
+                announce(
+                    TalkToolActivity(TalkToolStatus.DECLINED, DELEGATE),
+                    "The operator confirmed a handoff, but Talk refused it, so nothing started or was created. " +
+                        "Tell the user why and ask how to proceed. Talk said: ${outcome.text.ifEmpty { "(nothing)" }}",
+                )
+                throw TalkSetupException("Talk did not start the work; nothing was created")
+            }
+
+            is DelegateOutcome.Started -> {
+                announce(
+                    TalkToolActivity(accepted, DELEGATE, outcome.runId),
+                    "$notice Talk tool output: ${outcome.text}",
+                    watchOutput = outcome.text,
+                )
+                return outcome
+            }
         }
-        val run = WORK_STARTED.find(output)?.groupValues?.get(1)
-        announce(
-            TalkToolActivity(if (run != null) accepted else TalkToolStatus.FINISHED, DELEGATE, run.orEmpty()),
-            "$notice Talk tool output: ${output.ifEmpty { "(no output)" }}",
-            watchOutput = output,
-        )
-        return run.orEmpty()
     }
 
     /** Nothing is posted. [wrongProject] asks the model to re-identify the project first. */
@@ -499,7 +519,6 @@ class TalkCallController(
         const val DELEGATE = "delegate_task"
         const val CATALOG_WAIT_MS = 4_000L
         const val HANDOFF_TTL_MS = 600_000L
-        val WORK_STARTED = Regex("WORK_STARTED #(\\d+) kind=(\\w+)")
         const val CANCELLED_NOTICE =
             "The operator cancelled this handoff on screen. Nothing was started. Acknowledge briefly."
         const val WRONG_PROJECT_NOTICE =

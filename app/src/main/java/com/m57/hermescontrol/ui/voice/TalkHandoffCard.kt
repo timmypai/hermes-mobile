@@ -338,6 +338,13 @@ internal fun TalkToolLine(
             TalkToolStatus.UNCERTAIN -> Icons.AutoMirrored.Filled.HelpOutline
         }
     val name = tool?.tool.orEmpty()
+    // Some Talk lanes accept work without a run id; never render an empty "#".
+    val run =
+        tool
+            ?.reference
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { " #$it" }
+            .orEmpty()
     val text =
         when (status) {
             TalkToolStatus.RUNNING -> {
@@ -353,15 +360,11 @@ internal fun TalkToolLine(
             }
 
             TalkToolStatus.TALK_ACCEPTED -> {
-                stringResource(
-                    R.string.realtime_tool_talk_accepted,
-                    tool?.reference.orEmpty(),
-                    name,
-                )
+                stringResource(R.string.realtime_tool_talk_accepted, run, name)
             }
 
             TalkToolStatus.INTAKE_STARTED -> {
-                stringResource(R.string.realtime_tool_intake_started, tool?.reference.orEmpty())
+                stringResource(R.string.realtime_tool_intake_started, run)
             }
 
             TalkToolStatus.DECLINED -> {

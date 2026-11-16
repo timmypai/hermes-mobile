@@ -3,6 +3,7 @@ package com.m57.hermescontrol.ui.voice
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -72,5 +73,48 @@ class TalkProtocolTest {
         assertThrows(TalkSetupException::class.java) {
             TalkProtocol.validateSession(JsonObject(session + ("model" to JsonPrimitive("gpt-realtime-mini"))))
         }
+    }
+
+    // Reply texts are from hermes-talk 3b8f88b talk_tools.py / talk_host.py run_agent.
+    @Test
+    fun `Talk plain-text refusals are not started work`() {
+        for (text in listOf(
+            "delegate_task's execution_mode must be 'exclusive' or 'parallel_read_only'.",
+            "delegate_task could not use those resource_keys: empty key.",
+            "I can't start that yet — run 12 holds repo:mobile.",
+            "I couldn't start that work — that failed: delegation paused",
+            "",
+        )) {
+            assertEquals(
+                DelegateOutcome.Refused(text),
+                DelegateOutcome.of(json("""{"ok":true,"output":${JsonPrimitive(text)}}""")),
+            )
+        }
+    }
+
+    @Test
+    fun `only a WORK_STARTED receipt is started, with or without a run id`() {
+        assertEquals(
+            DelegateOutcome.Started("41", "WORK_STARTED #41 kind=agent — running"),
+            DelegateOutcome.of(json("""{"ok":true,"output":"WORK_STARTED #41 kind=agent — running"}""")),
+        )
+        assertEquals(
+            DelegateOutcome.Started("", "WORK_STARTED — on it"),
+            DelegateOutcome.of(json("""{"output":"WORK_STARTED — on it"}""")),
+        )
+        assertEquals(
+            DelegateOutcome.Refused("Earlier WORK_STARTED #41 was refused"),
+            DelegateOutcome.of(json("""{"ok":true,"output":"Earlier WORK_STARTED #41 was refused"}""")),
+        )
+    }
+
+    @Test
+    fun `unreadable or failed tool replies stay uncertain`() {
+        assertEquals(DelegateOutcome.Uncertain, DelegateOutcome.of(null))
+        assertEquals(DelegateOutcome.Uncertain, DelegateOutcome.of(json("""{"ok":true}""")))
+        assertEquals(
+            DelegateOutcome.Uncertain,
+            DelegateOutcome.of(json("""{"ok":false,"output":"WORK_STARTED #41 kind=agent"}""")),
+        )
     }
 }

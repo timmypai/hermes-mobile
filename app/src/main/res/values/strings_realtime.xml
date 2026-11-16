@@ -68,8 +68,8 @@
     <string name="realtime_tool_waiting">Waiting for your confirmation</string>
     <string name="realtime_tool_running">%1$s</string>
     <string name="realtime_tool_finished">%1$s done</string>
-    <string name="realtime_tool_talk_accepted">Talk #%1$s · %2$s</string>
-    <string name="realtime_tool_intake_started">Hermes #%1$s · creating EPIC for Orchestrator</string>
-    <string name="realtime_tool_declined">Not sent</string>
+    <string name="realtime_tool_talk_accepted">Talk%1$s · %2$s</string>
+    <string name="realtime_tool_intake_started">Hermes%1$s · creating EPIC for Orchestrator</string>
+    <string name="realtime_tool_declined">Not started</string>
     <string name="realtime_tool_uncertain">Outcome uncertain, not retried</string>
 </resources>

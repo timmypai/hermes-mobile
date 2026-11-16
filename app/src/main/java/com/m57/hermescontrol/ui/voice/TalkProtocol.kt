@@ -20,6 +20,45 @@ internal class TalkSetupException(
     message: String,
 ) : IllegalStateException(message)
 
+/**
+ * What one delegate_task POST to Talk `/tool` proves. Every Talk backend is asynchronous: acceptance is a
+ * `WORK_STARTED` receipt (`#<run> kind=…`, or `— …` on lanes without a run id). Talk refuses in plain text.
+ */
+internal sealed interface DelegateOutcome {
+    /** Unreadable, missing or `ok: false` reply: the work may or may not exist. */
+    data object Uncertain : DelegateOutcome
+
+    data class Refused(
+        val text: String,
+    ) : DelegateOutcome
+
+    /** [runId] is empty when the accepting lane reports none. */
+    data class Started(
+        val runId: String,
+        val text: String,
+    ) : DelegateOutcome
+
+    companion object {
+        private val RUN = Regex("""^WORK_STARTED #(\d+)""")
+
+        fun of(reply: JsonObject?): DelegateOutcome {
+            if (reply == null || reply["output"] == null || (reply["ok"] != null && !reply.flag("ok"))) {
+                return Uncertain
+            }
+            val output = reply.text("output").trimStart()
+            if (!output.startsWith("WORK_STARTED")) return Refused(output)
+            return Started(
+                RUN
+                    .find(output)
+                    ?.groupValues
+                    ?.get(1)
+                    .orEmpty(),
+                output,
+            )
+        }
+    }
+}
+
 /** The existing global Talk lane. No Bot/session binding or custom server capability is required. */
 internal object TalkProtocol {
     const val MODEL = "gpt-realtime-2.1"
